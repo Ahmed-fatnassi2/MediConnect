@@ -1,0 +1,358 @@
+import mimetypes
+
+from django.contrib import messages
+from django.contrib.auth import get_user_model
+from django.contrib.auth.decorators import login_required
+from django.db import transaction
+from django.db.models import Count, Max, Q
+from django.http import FileResponse, Http404
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.views.decorators.http import require_POST
+
+from appointments.views import verified_doctor_required
+from core.models import get_role
+from core.views import role_required
+from teleconsult.models import ConsultationSummary, Notification
+from teleconsult.services import notify
+from triage.models import TriageSession
+
+from . import access
+from .forms import (
+    DRUG_DATALIST_ID,
+    DocumentForm,
+    MedicalRecordForm,
+    NoteForm,
+    PrescriptionForm,
+    PrescriptionItemFormSet,
+    allergy_conflicts,
+)
+from .models import AccessLog, Drug, MedicalDocument, MedicalRecord, Prescription
+
+User = get_user_model()
+Action = AccessLog.Action
+
+
+def _layout(request, role, active_nav):
+    ctx = {
+        "role": role,
+        "active_nav": active_nav,
+        "layout": "core/patient/_layout.html" if role == "patient" else "core/doctor/_layout.html",
+    }
+    if role == "doctor":
+        ctx["profile"] = request.user.doctor_profile
+    return ctx
+
+
+def _record_url(record, role, tab=None):
+    if role == "patient":
+        url = reverse("records:my_record")
+    else:
+        url = reverse("records:patient_record", args=[record.patient_id])
+    return f"{url}?onglet={tab}" if tab else url
+
+
+# --------------------------------------------------------------------------
+# The record page (shared by the patient and the doctors who follow them)
+# --------------------------------------------------------------------------
+
+TABS = [
+    ("apercu", "Aperçu", "grid-1x2"),
+    ("notes", "Notes", "journal-text"),
+    ("ordonnances", "Ordonnances", "capsule"),
+    ("documents", "Documents", "folder2"),
+    ("acces", "Accès au dossier", "shield-lock"),
+]
+
+
+def _record_page(request, record, role):
+    keys = [key for key, _, _ in TABS if role == "patient" or key != "acces"]
+    tab = request.GET.get("onglet", "apercu")
+    if tab not in keys:
+        tab = "apercu"
+    if role == "doctor":
+        access.log(request, record, Action.VIEW)
+
+    patient = record.patient
+    notes = record.notes.select_related("author", "appointment")
+    if role == "patient":
+        notes = notes.filter(visible_to_patient=True)
+    prescriptions = record.prescriptions.select_related("doctor").prefetch_related("items__drug")
+    documents = record.documents.select_related("uploaded_by")
+    counts = {"notes": notes.count(), "ordonnances": prescriptions.count(), "documents": documents.count()}
+    tabs = [
+        {"key": key, "label": label, "icon": icon, "count": counts.get(key)}
+        for key, label, icon in TABS if key in keys
+    ]
+    context = {
+        **_layout(request, role, "records" if role == "patient" else "patients"),
+        "record": record,
+        "patient": patient,
+        "patient_age": TriageSession.age_from_birth_date(patient.patient_profile.date_of_birth),
+        "tabs": tabs,
+        "tab": tab,
+        "notes": notes,
+        "prescriptions": prescriptions,
+        "documents": documents,
+        "consultations": ConsultationSummary.objects.filter(room__appointment__patient=patient)
+        .select_related("room__appointment__doctor", "room__appointment__specialty"),
+    }
+    if tab == "acces":
+        context["logs"] = record.access_logs.select_related("user__doctor_profile")[:100]
+    return render(request, "records/record.html", context)
+
+
+def _save_record_form(request, record, role):
+    form = MedicalRecordForm(request.POST or None, instance=record)
+    if request.method == "POST" and form.is_valid():
+        record = form.save(commit=False)
+        record.updated_by = request.user
+        record.save()
+        changed = ", ".join(str(form.fields[f].label) for f in form.changed_data)
+        access.log(request, record, Action.UPDATE, changed)
+        if role == "doctor":
+            notify(
+                record.patient, Notification.Kind.RECORD, "Votre dossier médical a été mis à jour",
+                f"Dr {request.user.get_full_name()} a mis à jour vos informations médicales.",
+                reverse("records:my_record"),
+            )
+        messages.success(request, "Informations médicales enregistrées.")
+        return redirect(_record_url(record, role))
+    context = {**_layout(request, role, "records" if role == "patient" else "patients"),
+               "form": form, "record": record, "back": _record_url(record, role)}
+    return render(request, "records/record_form.html", context)
+
+
+def _upload_document(request, record, role):
+    form = DocumentForm(request.POST or None, request.FILES or None)
+    if request.method == "POST" and form.is_valid():
+        document = form.save(commit=False)
+        document.record = record
+        document.uploaded_by = request.user
+        upload = form.cleaned_data["file"]
+        document.original_name = upload.name[:200]
+        document.size = upload.size
+        document.save()
+        access.log(request, record, Action.DOCUMENT_ADD, document.title)
+        if role == "doctor":
+            notify(
+                record.patient, Notification.Kind.RECORD, "Nouveau document dans votre dossier",
+                f"Dr {request.user.get_full_name()} a ajouté « {document.title} ».",
+                f"{reverse('records:my_record')}?onglet=documents",
+            )
+        messages.success(request, "Document ajouté au dossier.")
+        return redirect(_record_url(record, role, "documents"))
+    context = {**_layout(request, role, "records" if role == "patient" else "patients"),
+               "form": form, "record": record, "back": _record_url(record, role, "documents")}
+    return render(request, "records/document_form.html", context)
+
+
+# --------------------------------------------------------------------------
+# Patient
+# --------------------------------------------------------------------------
+
+@role_required("patient")
+def my_record(request):
+    return _record_page(request, MedicalRecord.for_patient(request.user), "patient")
+
+
+@role_required("patient")
+def edit_my_record(request):
+    return _save_record_form(request, MedicalRecord.for_patient(request.user), "patient")
+
+
+@role_required("patient")
+def add_my_document(request):
+    return _upload_document(request, MedicalRecord.for_patient(request.user), "patient")
+
+
+# --------------------------------------------------------------------------
+# Doctor
+# --------------------------------------------------------------------------
+
+def _followed_record(request, patient_id):
+    patient = get_object_or_404(User.objects.select_related("patient_profile"), pk=patient_id,
+                                patient_profile__isnull=False)
+    if not access.doctor_follows(request.user, patient):
+        raise Http404
+    return MedicalRecord.for_patient(patient)
+
+
+@verified_doctor_required
+def patient_list(request):
+    query = request.GET.get("q", "").strip()
+    patients = (
+        User.objects.filter(
+            patient_profile__isnull=False,
+            patient_appointments__doctor=request.user,
+            patient_appointments__status__in=access.CARE_STATUSES,
+        )
+        .annotate(last_visit=Max("patient_appointments__start"), visits=Count("patient_appointments"))
+        .select_related("patient_profile", "medical_record")
+        .order_by("last_name", "first_name")
+    )
+    if query:
+        patients = patients.filter(Q(first_name__icontains=query) | Q(last_name__icontains=query))
+    patients = list(patients)
+    for p in patients:
+        p.age = TriageSession.age_from_birth_date(p.patient_profile.date_of_birth)
+    context = {**_layout(request, "doctor", "patients"), "patients": patients, "query": query}
+    return render(request, "records/patient_list.html", context)
+
+
+@verified_doctor_required
+def patient_record(request, patient_id):
+    return _record_page(request, _followed_record(request, patient_id), "doctor")
+
+
+@verified_doctor_required
+def doctor_edit_record(request, patient_id):
+    return _save_record_form(request, _followed_record(request, patient_id), "doctor")
+
+
+@verified_doctor_required
+def doctor_add_document(request, patient_id):
+    return _upload_document(request, _followed_record(request, patient_id), "doctor")
+
+
+@verified_doctor_required
+def add_note(request, patient_id):
+    record = _followed_record(request, patient_id)
+    form = NoteForm(request.POST or None, doctor=request.user, patient=record.patient,
+                    initial={"appointment": request.GET.get("rdv")})
+    if request.method == "POST" and form.is_valid():
+        note = form.save(commit=False)
+        note.record = record
+        note.author = request.user
+        note.save()
+        access.log(request, record, Action.NOTE, note.title)
+        if note.visible_to_patient:
+            notify(
+                record.patient, Notification.Kind.RECORD, "Nouvelle note dans votre dossier",
+                f"Dr {request.user.get_full_name()} : {note.title}",
+                f"{reverse('records:my_record')}?onglet=notes",
+            )
+        messages.success(request, "Note ajoutée au dossier.")
+        return redirect(_record_url(record, "doctor", "notes"))
+    context = {**_layout(request, "doctor", "patients"), "form": form, "record": record,
+               "back": _record_url(record, "doctor", "notes")}
+    return render(request, "records/note_form.html", context)
+
+
+@verified_doctor_required
+def new_prescription(request, patient_id):
+    record = _followed_record(request, patient_id)
+    post = request.POST if request.method == "POST" else None
+    form = PrescriptionForm(post, doctor=request.user, patient=record.patient,
+                            initial={"appointment": request.GET.get("rdv")})
+    formset = PrescriptionItemFormSet(post, instance=Prescription(), prefix="items")
+    conflicts = []
+    if post is not None and form.is_valid() and formset.is_valid():
+        names = [f.cleaned_data["drug_name"] for f in formset.forms if f.cleaned_data.get("drug_name")]
+        conflicts = allergy_conflicts(record, names)
+        if not conflicts or post.get("confirm_allergy"):
+            with transaction.atomic():
+                prescription = form.save(commit=False)
+                prescription.record = record
+                prescription.doctor = request.user
+                prescription.save()
+                formset.instance = prescription
+                formset.save()
+            access.log(request, record, Action.PRESCRIPTION, prescription.code)
+            notify(
+                record.patient, Notification.Kind.PRESCRIPTION, "Nouvelle ordonnance",
+                f"Dr {request.user.get_full_name()} vous a prescrit : {prescription.title}.",
+                reverse("records:prescription", args=[prescription.code]),
+            )
+            messages.success(request, "Ordonnance enregistrée. Le patient peut la consulter et l'imprimer.")
+            return redirect("records:prescription", code=prescription.code)
+    context = {
+        **_layout(request, "doctor", "patients"),
+        "form": form, "formset": formset, "record": record, "conflicts": conflicts,
+        "back": _record_url(record, "doctor", "ordonnances"),
+        "suggestions": Drug.objects.filter(is_active=True),
+        "datalist_id": DRUG_DATALIST_ID,
+    }
+    return render(request, "records/prescription_form.html", context)
+
+
+# --------------------------------------------------------------------------
+# Shared: prescriptions and documents
+# --------------------------------------------------------------------------
+
+@login_required
+def prescription_list(request):
+    role = get_role(request.user)
+    if role == "patient":
+        prescriptions = Prescription.objects.filter(record__patient=request.user)
+        nav = "prescriptions"
+    elif role == "doctor" and request.user.doctor_profile.is_verified:
+        prescriptions = Prescription.objects.filter(doctor=request.user)
+        nav = "prescriptions"
+    else:
+        return redirect("dashboard")
+    prescriptions = prescriptions.select_related("doctor", "record__patient").prefetch_related("items__drug")
+    context = {**_layout(request, role, nav), "prescriptions": prescriptions}
+    return render(request, "records/prescription_list.html", context)
+
+
+def _viewable(request, record):
+    role = get_role(request.user)
+    if role not in ("patient", "doctor") or not access.can_view(request.user, record):
+        raise Http404
+    return role
+
+
+@login_required
+def prescription_detail(request, code):
+    prescription = get_object_or_404(
+        Prescription.objects.select_related("record__patient__patient_profile", "doctor__doctor_profile", "appointment"),
+        code=code,
+    )
+    record = prescription.record
+    role = _viewable(request, record)
+    if request.user != prescription.doctor:
+        access.log(request, record, Action.PRESCRIPTION_VIEW, prescription.code)
+    patient = record.patient
+    context = {
+        **_layout(request, role, "prescriptions"),
+        "prescription": prescription,
+        "items": prescription.items.select_related("drug"),
+        "patient": patient,
+        "patient_age": TriageSession.age_from_birth_date(patient.patient_profile.date_of_birth),
+        "record": record,
+        "back": reverse("records:prescriptions") if role == "patient" else _record_url(record, role, "ordonnances"),
+    }
+    return render(request, "records/prescription_detail.html", context)
+
+
+@login_required
+def document_file(request, pk):
+    document = get_object_or_404(MedicalDocument.objects.select_related("record"), pk=pk)
+    _viewable(request, document.record)
+    if request.user.pk != document.uploaded_by_id:
+        access.log(request, document.record, Action.DOCUMENT_VIEW, document.title)
+    try:
+        handle = document.file.open("rb")
+    except FileNotFoundError:
+        raise Http404
+    content_type = mimetypes.guess_type(document.file.name)[0] or "application/octet-stream"
+    filename = document.original_name or f"document.{document.extension.lower()}"
+    return FileResponse(handle, content_type=content_type, filename=filename,
+                        as_attachment=request.GET.get("telecharger") == "1")
+
+
+@login_required
+@require_POST
+def document_delete(request, pk):
+    document = get_object_or_404(MedicalDocument.objects.select_related("record"), pk=pk)
+    role = _viewable(request, document.record)
+    if request.user.pk != document.uploaded_by_id:
+        raise Http404
+    record = document.record
+    title = document.title
+    document.file.delete(save=False)
+    document.delete()
+    access.log(request, record, Action.DOCUMENT_DELETE, title)
+    messages.success(request, "Document supprimé.")
+    return redirect(_record_url(record, role, "documents"))
