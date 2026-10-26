@@ -11,7 +11,10 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from appointments.models import Appointment
 from core.models import get_role
-from records.models import MedicalRecord
+from records import access
+from records.ai_analysis import start_analysis
+from records.forms import SharedDocumentForm
+from records.models import AccessLog, MedicalRecord
 from triage.models import TriageSession
 
 from .forms import SummaryForm
@@ -99,7 +102,7 @@ def room(request, code):
         "entries": session.symptoms.all() if session and role == "doctor" else [],
         "red_flags": session.result.red_flags.all() if session and role == "doctor" and hasattr(session, "result") else [],
         "patient_age": TriageSession.age_from_birth_date(appointment.patient.patient_profile.date_of_birth),
-        "transcript": room.messages.select_related("sender") if room.is_closed else None,
+        "transcript": room.messages.select_related("sender", "document") if room.is_closed else None,
         "record": MedicalRecord.objects.filter(patient=appointment.patient).first() if role == "doctor" else None,
     }
     return render(request, "teleconsult/room.html", context)
@@ -183,8 +186,38 @@ def chat(request, code):
         after = int(request.GET.get("after", 0))
     except ValueError:
         after = 0
-    msgs = room.messages.filter(pk__gt=after).select_related("sender", "room__appointment")[:200]
+    msgs = room.messages.filter(pk__gt=after).select_related("sender", "room__appointment", "document")[:200]
     return JsonResponse({"messages": [m.as_json(request.user) for m in msgs], **_room_state(room, role)})
+
+
+@login_required
+@require_POST
+def share_document(request, code):
+    """Attach a document (lab results…) during the consultation: saved in the patient's record."""
+    room, role = _participant_room(request, code)
+    if not room.is_open:
+        return JsonResponse({"error": "La consultation n'est pas en cours."}, status=409)
+    form = SharedDocumentForm(request.POST, request.FILES)
+    if not form.is_valid():
+        errors = [e for field_errors in form.errors.values() for e in field_errors]
+        return JsonResponse({"error": " ".join(errors) or "Fichier refusé."}, status=400)
+    appointment = room.appointment
+    record = MedicalRecord.for_patient(appointment.patient)
+    document = form.save(commit=False)
+    upload = form.cleaned_data["file"]
+    document.record = record
+    document.uploaded_by = request.user
+    document.appointment = appointment
+    document.original_name = upload.name[:200]
+    document.size = upload.size
+    document.save()
+    access.log(request, record, AccessLog.Action.DOCUMENT_ADD, document.title)
+    msg = ChatMessage.objects.create(
+        room=room, sender=request.user, kind=ChatMessage.Kind.DOCUMENT, body=document.title, document=document
+    )
+    # The AI report is prepared right away so it is ready when the doctor opens it.
+    start_analysis(document)
+    return JsonResponse({"message": msg.as_json(request.user), **_room_state(room, role)})
 
 
 def _signal_key(room, role):

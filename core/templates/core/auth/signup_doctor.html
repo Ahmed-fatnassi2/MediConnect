@@ -71,7 +71,6 @@
       </div>
       {% include "core/partials/field.html" with field=form.diploma icon="mortarboard" %}
       {% include "core/partials/field.html" with field=form.license_document icon="award" %}
-      {% include "core/partials/field.html" with field=form.id_document icon="person-vcard" %}
       <div class="alert alert-info" style="margin:0"><i class="bi bi-lock"></i><p>Vos justificatifs sont stockés de façon sécurisée et consultés uniquement par l'équipe de vérification.</p></div>
     </fieldset>
 
@@ -84,6 +83,7 @@
         {% include "core/partials/field.html" with field=form.password1 %}
         {% include "core/partials/field.html" with field=form.password2 %}
       </div>
+      <div class="alert alert-info" style="margin-bottom:1rem"><i class="bi bi-robot"></i><p>Pour accélérer la vérification, votre diplôme, votre attestation d'inscription, votre nom, votre spécialité et votre numéro d'inscription sont analysés automatiquement par un service d'intelligence artificielle (OpenAI). La décision finale est toujours prise par notre équipe.</p></div>
       {% include "core/partials/field.html" with field=form.certify %}
       {% include "core/partials/field.html" with field=form.accept_terms %}
     </fieldset>

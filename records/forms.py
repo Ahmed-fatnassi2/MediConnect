@@ -98,6 +98,24 @@ class DocumentForm(StyledFormMixin, forms.ModelForm):
         return file
 
 
+class SharedDocumentForm(DocumentForm):
+    """Document sent from the consultation room: only the file is required."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["title"].required = False
+        self.fields["kind"].required = False
+
+    def clean_title(self):
+        title = (self.cleaned_data.get("title") or "").strip()
+        if not title and self.files.get("file"):
+            title = self.files["file"].name.rsplit(".", 1)[0][:150]
+        return title or "Document"
+
+    def clean_kind(self):
+        return self.cleaned_data.get("kind") or MedicalDocument.Kind.ANALYSIS
+
+
 class PrescriptionForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = Prescription

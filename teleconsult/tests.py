@@ -1,13 +1,16 @@
 import json
+import tempfile
 from datetime import timedelta
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from appointments.models import Appointment
 from appointments.tests import PASSWORD, make_doctor, make_patient
+from records.models import DocumentAnalysis, MedicalDocument
 
 from .models import ChatMessage, ConsultationRoom, ConsultationSummary, Notification
 from .services import room_for
@@ -238,3 +241,76 @@ class NotificationTests(RoomTestCase):
         self.assertContains(self.client.get(reverse("teleconsult:list")), "Dr Sarah Benali")
         self.login("doctor")
         self.assertContains(self.client.get(reverse("teleconsult:list")), "Amina Belhadj")
+
+
+SHARE_MEDIA = tempfile.mkdtemp()
+PDF_BYTES = b"%PDF-1.4\n" + b"0" * 500 + b"\n%%EOF\n"
+
+
+@override_settings(MEDIA_ROOT=SHARE_MEDIA)
+class SharedDocumentTests(RoomTestCase):
+    def setUp(self):
+        super().setUp()
+        self.room.open()
+
+    def share(self, content=PDF_BYTES, name="bilan-sanguin.pdf"):
+        return self.client.post(self.url("share_document"), {"file": SimpleUploadedFile(name, content)})
+
+    def test_patient_shares_lab_results(self):
+        self.login("patient")
+        response = self.share()
+        self.assertEqual(response.status_code, 200)
+        message = response.json()["message"]
+        self.assertEqual(message["kind"], "document")
+        self.assertEqual(message["document"]["title"], "bilan-sanguin")
+        self.assertIsNone(message["document"]["analysis_url"])  # the AI report is for the doctor
+        document = MedicalDocument.objects.get()
+        self.assertEqual(document.record.patient, self.patient)
+        self.assertEqual(document.appointment, self.appointment)
+        self.assertEqual(document.kind, "analysis")
+        self.assertEqual(DocumentAnalysis.objects.filter(document=document).count(), 1)  # prepared right away
+
+        # The doctor sees it in the chat with the link to the AI report.
+        self.login("doctor")
+        data = self.client.get(self.url("chat")).json()
+        doc_msg = next(m for m in data["messages"] if m["kind"] == "document")
+        self.assertEqual(doc_msg["document"]["analysis_url"], reverse("records:document_analysis", args=[document.pk]))
+
+    def test_fake_file_and_closed_room_rejected(self):
+        self.login("patient")
+        self.assertEqual(self.share(b"MZ this is not a pdf", "x.pdf").status_code, 400)
+        ConsultationRoom.objects.filter(pk=self.room.pk).update(status="closed")
+        self.assertEqual(self.share().status_code, 409)
+
+    def test_analysis_page_is_for_following_doctors_only(self):
+        self.login("patient")
+        self.share()
+        document = MedicalDocument.objects.get()
+        url = reverse("records:document_analysis", args=[document.pk])
+        self.assertNotEqual(self.client.get(url).status_code, 200)  # patient: redirected away
+        self.login("doctor")
+        response = self.client.get(url)
+        self.assertContains(response, "Compte rendu IA du document")
+        self.assertContains(response, "désactivée")  # no OpenAI call during tests
+        self.client.post(url)
+        self.assertEqual(document.analyses.count(), 2)  # re-run
+        make_doctor("autre@test.fr", number="ORD-9")
+        self.client.login(username="autre@test.fr", password=PASSWORD)
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_read_with_ai_button_endpoint(self):
+        self.login("patient")
+        message = self.share().json()["message"]
+        self.assertIsNone(message["document"]["analysis_api"])  # no button for the patient
+        document = MedicalDocument.objects.get()
+        api = reverse("records:document_analysis_api", args=[document.pk])
+        self.assertNotEqual(self.client.post(api).status_code, 200)
+
+        self.login("doctor")
+        doc = next(m for m in self.client.get(self.url("chat")).json()["messages"] if m["kind"] == "document")
+        self.assertEqual(doc["document"]["analysis_api"], api)
+        data = self.client.get(api).json()
+        self.assertEqual(data["status"], "error")  # AI is off during tests
+        self.assertIn("report_url", data)
+        self.client.post(api)  # failed reading: the button starts a new one
+        self.assertEqual(document.analyses.count(), 2)

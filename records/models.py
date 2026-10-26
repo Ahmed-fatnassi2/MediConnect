@@ -266,6 +266,10 @@ class MedicalDocument(models.Model):
         "fichier", upload_to=_document_path,
         validators=[FileExtensionValidator(ALLOWED_EXTENSIONS), validate_document_size],
     )
+    appointment = models.ForeignKey(
+        Appointment, on_delete=models.SET_NULL, null=True, blank=True, related_name="documents",
+        verbose_name="partagé pendant la consultation",
+    )
     original_name = models.CharField(max_length=200, blank=True, editable=False)
     size = models.PositiveIntegerField(default=0, editable=False)
     created_at = models.DateTimeField("ajouté le", auto_now_add=True)
@@ -305,11 +309,12 @@ class AccessLog(models.Model):
         DOCUMENT_ADD = "document_add", "Ajout d'un document"
         DOCUMENT_VIEW = "document_view", "Ouverture d'un document"
         DOCUMENT_DELETE = "document_delete", "Suppression d'un document"
+        DOCUMENT_ANALYSIS = "document_analysis", "Analyse IA d'un document"
 
     ICONS = {
         "view": "eye", "update": "pencil", "note": "journal-text", "prescription": "prescription2",
         "prescription_view": "prescription2", "document_add": "file-earmark-plus",
-        "document_view": "file-earmark", "document_delete": "trash",
+        "document_view": "file-earmark", "document_delete": "trash", "document_analysis": "robot",
     }
 
     record = models.ForeignKey(
@@ -335,3 +340,55 @@ class AccessLog(models.Model):
     @property
     def icon(self):
         return self.ICONS.get(self.action, "dot")
+
+
+class DocumentAnalysis(models.Model):
+    """Report written by the AI agent about a patient's document (lab results…), for the doctor."""
+
+    class Status(models.TextChoices):
+        RUNNING = "running", "En cours"
+        DONE = "done", "Terminée"
+        ERROR = "error", "Échec"
+
+    document = models.ForeignKey(
+        MedicalDocument, on_delete=models.CASCADE, related_name="analyses", verbose_name="document"
+    )
+    status = models.CharField("état", max_length=10, choices=Status.choices, default=Status.RUNNING)
+    document_type = models.CharField("type de document détecté", max_length=150, blank=True)
+    exam_date = models.CharField("date de l'examen", max_length=40, blank=True)
+    readable = models.BooleanField("document lisible", default=True)
+    # [{"name", "value", "unit", "reference", "flag": normal|high|low|abnormal|unknown, "comment"}]
+    values = models.JSONField("valeurs relevées", default=list, blank=True)
+    abnormal_findings = models.JSONField("anomalies", default=list, blank=True)
+    points_to_check = models.JSONField("points à vérifier", default=list, blank=True)
+    summary = models.TextField("synthèse", blank=True)
+    ai_model = models.CharField("modèle", max_length=60, blank=True)
+    error = models.CharField("erreur", max_length=300, blank=True)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+        verbose_name="demandée par",
+    )
+    created_at = models.DateTimeField("lancée le", auto_now_add=True)
+    finished_at = models.DateTimeField("terminée le", null=True, blank=True)
+
+    class Meta:
+        verbose_name = "analyse IA de document"
+        verbose_name_plural = "analyses IA de documents"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Analyse IA · {self.document}"
+
+    STALE_AFTER = timedelta(minutes=5)
+
+    @property
+    def is_running(self):
+        return self.status == self.Status.RUNNING and timezone.now() - self.created_at < self.STALE_AFTER
+
+    @property
+    def is_stale(self):
+        return self.status == self.Status.RUNNING and not self.is_running
+
+    @property
+    def abnormal_values(self):
+        return [v for v in self.values if v.get("flag") in ("high", "low", "abnormal")]

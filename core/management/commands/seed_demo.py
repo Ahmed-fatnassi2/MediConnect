@@ -71,7 +71,7 @@ class Command(BaseCommand):
                     user=u, phone="+00 6 00 00 00 00", specialty=specialty, license_number=number,
                     years_experience=8, city="Ville Démo", status=status,
                 )
-                for field in ("diploma", "license_document", "id_document"):
+                for field in ("diploma", "license_document"):
                     getattr(doc, field).save(f"{number}-{field}.pdf", ContentFile(b"%PDF-1.4 demo"), save=False)
                 doc.save()
 

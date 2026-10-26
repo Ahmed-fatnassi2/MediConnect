@@ -44,7 +44,7 @@
           <td><code>{{ d.license_number }}</code></td>
           <td>{{ d.city }}</td>
           <td>{{ d.submitted_at|date:"j M Y" }}</td>
-          <td>{% include "core/backoffice/_status_badge.html" with status=d.status %}</td>
+          <td class="nowrap">{% include "core/backoffice/_status_badge.html" with status=d.status %}{% if d.ai_risk %}<br><span class="badge verif-badge-{{ d.ai_risk }}" style="margin-top:.35rem" title="Analyse automatique du dossier"><i class="bi bi-robot"></i> Risque {% if d.ai_risk == "low" %}faible{% elif d.ai_risk == "medium" %}moyen{% else %}élevé{% endif %}</span>{% endif %}</td>
           <td><a href="{% url 'backoffice:doctor_detail' d.pk %}" class="btn {% if d.status == 'pending' %}btn-primary{% else %}btn-light{% endif %} btn-sm">{% if d.status == 'pending' %}Examiner{% else %}Voir{% endif %}</a></td>
         </tr>
         {% empty %}

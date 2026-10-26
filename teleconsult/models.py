@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
+from django.urls import reverse
 from django.utils import timezone
 
 from appointments.models import Appointment
@@ -98,6 +99,7 @@ class ChatMessage(models.Model):
     class Kind(models.TextChoices):
         TEXT = "text", "Message"
         SYSTEM = "system", "Événement"
+        DOCUMENT = "document", "Document partagé"
 
     room = models.ForeignKey(ConsultationRoom, on_delete=models.CASCADE, related_name="messages", verbose_name="salle")
     sender = models.ForeignKey(
@@ -106,6 +108,10 @@ class ChatMessage(models.Model):
     )
     kind = models.CharField("type", max_length=10, choices=Kind.choices, default=Kind.TEXT)
     body = models.TextField("message", max_length=2000)
+    document = models.ForeignKey(
+        "records.MedicalDocument", on_delete=models.SET_NULL, null=True, blank=True, related_name="chat_messages",
+        verbose_name="document partagé",
+    )
     created_at = models.DateTimeField("envoyé le", auto_now_add=True)
 
     class Meta:
@@ -119,7 +125,7 @@ class ChatMessage(models.Model):
     def as_json(self, viewer):
         local = timezone.localtime(self.created_at)
         is_doctor = self.sender_id == self.room.appointment.doctor_id
-        return {
+        data = {
             "id": self.pk,
             "kind": self.kind,
             "body": self.body,
@@ -127,6 +133,20 @@ class ChatMessage(models.Model):
             "sender": (f"Dr {self.sender.get_full_name()}" if is_doctor else self.sender.get_full_name()) if self.sender else "",
             "time": f"{local:%H:%M}",
         }
+        if self.kind == self.Kind.DOCUMENT:
+            doc = self.document
+            data["document"] = None if doc is None else {
+                "title": doc.title,
+                "kind": doc.get_kind_display(),
+                "info": f"{doc.extension} · {doc.size_label}",
+                "url": reverse("records:document", args=[doc.pk]),
+                # The AI report is for the doctor only.
+                "analysis_url": reverse("records:document_analysis", args=[doc.pk])
+                if viewer.pk == self.room.appointment.doctor_id else None,
+                "analysis_api": reverse("records:document_analysis_api", args=[doc.pk])
+                if viewer.pk == self.room.appointment.doctor_id else None,
+            }
+        return data
 
 
 class ConsultationSummary(models.Model):

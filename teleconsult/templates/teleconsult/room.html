@@ -39,6 +39,7 @@
      data-role="{{ role }}"
      data-chat-url="{% url 'teleconsult:chat' room.code %}"
      data-signal-url="{% url 'teleconsult:signal' room.code %}"
+     data-share-url="{% url 'teleconsult:share_document' room.code %}"
      data-csrf="{{ csrf_token }}"
      data-other="{{ other_label }}">
   <div class="room-main">
@@ -90,11 +91,36 @@
       <p class="chat-empty" data-chat-empty>Aucun message pour le moment. Écrivez à {{ other_label }}.</p>
     </div>
     <form class="chat-form" data-chat-form>
+      <label class="btn btn-light chat-attach" title="Joindre un document (analyse, bilan sanguin…)" data-attach-label>
+        <i class="bi bi-paperclip"></i><span class="visually-hidden">Joindre un document</span>
+        <input type="file" accept=".pdf,.jpg,.jpeg,.png" data-attach hidden>
+      </label>
       <textarea name="body" rows="2" maxlength="2000" class="form-control" placeholder="Votre message…" aria-label="Votre message" required></textarea>
       <button type="submit" class="btn btn-primary" aria-label="Envoyer"><i class="bi bi-send"></i></button>
     </form>
+    <p class="chat-hint"><i class="bi bi-paperclip"></i> {% if role == "patient" %}Joignez vos analyses (bilan sanguin, radio…) : PDF, JPG ou PNG, 5 Mo max. Elles sont ajoutées à votre dossier médical et lues par une IA pour aider le médecin.{% else %}Les documents partagés sont ajoutés au dossier du patient. Un compte rendu IA est préparé pour vous.{% endif %}</p>
   </aside>
 </div>
+{% if role == "doctor" %}
+<!-- AI reading of a document shared in the chat (doctor only) -->
+<dialog class="ai-dialog" data-ai-dialog aria-labelledby="ai-dialog-title">
+  <div class="ai-dialog-head">
+    <div>
+      <h3 id="ai-dialog-title"><i class="bi bi-robot"></i> Lecture IA du document</h3>
+      <span data-ai-doc></span>
+    </div>
+    <button type="button" class="btn btn-ghost btn-sm" data-ai-close aria-label="Fermer"><i class="bi bi-x-lg"></i></button>
+  </div>
+  <div class="ai-dialog-body" data-ai-body aria-live="polite"></div>
+  <div class="ai-dialog-foot">
+    <span class="small text-muted">Aide à la lecture générée par IA : vérifiez les valeurs sur le document original.</span>
+    <div>
+      <button type="button" class="btn btn-light btn-sm" data-ai-rerun hidden><i class="bi bi-arrow-repeat"></i> Relancer</button>
+      <a class="btn btn-primary btn-sm" data-ai-full target="_blank" rel="noopener" hidden><i class="bi bi-box-arrow-up-right"></i> Compte rendu complet</a>
+    </div>
+  </div>
+</dialog>
+{% endif %}
 <div class="alert alert-info" data-room-closed hidden style="margin-top:1.25rem"><i class="bi bi-check2-circle"></i><p>La consultation est terminée. <a href="{% url 'teleconsult:room' room.code %}">Afficher le compte rendu</a></p></div>
 
 {% else %}
@@ -107,6 +133,15 @@
         {% for m in transcript %}
           {% if m.kind == "system" %}
           <div class="msg-system">{{ m.body }} · {{ m.created_at|time:"H:i" }}</div>
+          {% elif m.kind == "document" %}
+          <div class="msg{% if m.sender_id == user.pk %} mine{% endif %}">
+            <span class="msg-meta">{% if m.sender_id == appointment.doctor_id %}Dr {% endif %}{{ m.sender.get_full_name }} · {{ m.created_at|time:"H:i" }}</span>
+            <div class="msg-bubble msg-doc">
+              <i class="bi bi-file-earmark-medical"></i>
+              <div><strong>{{ m.document.title|default:m.body }}</strong>{% if m.document %}<span>{{ m.document.get_kind_display }} · {{ m.document.extension }}, {{ m.document.size_label }}</span>{% else %}<span>Document supprimé</span>{% endif %}</div>
+              {% if m.document %}<div class="msg-doc-actions"><a href="{% url 'records:document' m.document.pk %}" target="_blank" rel="noopener">Ouvrir</a>{% if role == "doctor" %}<a href="{% url 'records:document_analysis' m.document.pk %}" target="_blank" rel="noopener"><i class="bi bi-robot"></i> Compte rendu IA</a>{% endif %}</div>{% endif %}
+            </div>
+          </div>
           {% else %}
           <div class="msg{% if m.sender_id == user.pk %} mine{% endif %}">
             <span class="msg-meta">{% if m.sender_id == appointment.doctor_id %}Dr {% endif %}{{ m.sender.get_full_name }} · {{ m.created_at|time:"H:i" }}</span>
@@ -137,4 +172,4 @@
 {% endif %}
 {% endblock %}
 
-{% block scripts %}{% if not room.is_closed %}<script src="{% static 'core/js/room.js' %}" defer></script>{% endif %}{% endblock %}
+{% block scripts %}{% if not room.is_closed %}<script src="{% static 'core/js/room.js' %}?v={{ asset_version }}" defer></script>{% endif %}{% endblock %}

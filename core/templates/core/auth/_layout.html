@@ -18,10 +18,11 @@
     <div class="auth-aside-foot"><i class="bi bi-shield-lock"></i> Vos données de santé sont chiffrées et confidentielles.</div>
   </aside>
 
-  <main class="auth-main">
+  <main class="auth-main" id="contenu" tabindex="-1">
     <div class="auth-topbar">
       {% include "core/partials/logo.html" %}
       <a href="{% url 'home' %}" class="text-muted"><i class="bi bi-arrow-left"></i> Retour à l'accueil</a>
+      <button type="button" class="icon-btn" data-a11y-open aria-label="Accessibilité" title="Accessibilité"><i class="bi bi-universal-access-circle"></i></button>
       {% block topbar_right %}{% endblock %}
     </div>
     {% block content %}{% endblock %}

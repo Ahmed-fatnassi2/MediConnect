@@ -28,7 +28,7 @@ def make_doctor(email="doc@test.com", status=DoctorProfile.Status.PENDING, numbe
     user = User.objects.create_user(email, email, PASSWORD, first_name="Karim", last_name="Haddad")
     DoctorProfile.objects.create(
         user=user, phone="0600000000", specialty="general", license_number=number, city="Ville",
-        diploma=pdf(), license_document=pdf(), id_document=pdf(), status=status,
+        diploma=pdf(), license_document=pdf(), status=status,
     )
     return user
 
@@ -67,7 +67,7 @@ class MediConnectTests(TestCase):
         response = self.client.post(reverse("signup_doctor"), {
             "first_name": "Karim", "last_name": "Haddad", "email": "k@test.com", "phone": "0600",
             "specialty": "cardiology", "license_number": "ord-42", "years_experience": 5, "city": "Ville",
-            "diploma": pdf(), "license_document": pdf(), "id_document": pdf("id.png"),
+            "diploma": pdf(), "license_document": pdf("ordre.png"),
             "password1": PASSWORD, "password2": PASSWORD, "accept_terms": "on", "certify": "on",
         }, follow=True)
         self.assertRedirects(response, reverse("doctor_dashboard"))
@@ -80,7 +80,7 @@ class MediConnectTests(TestCase):
         response = self.client.post(reverse("signup_doctor"), {
             "first_name": "K", "last_name": "H", "email": "k2@test.com", "phone": "0600",
             "specialty": "general", "license_number": "X1", "years_experience": 1, "city": "V",
-            "diploma": SimpleUploadedFile("virus.exe", b"MZ"), "license_document": pdf(), "id_document": pdf(),
+            "diploma": SimpleUploadedFile("virus.exe", b"MZ"), "license_document": pdf(),
             "password1": PASSWORD, "password2": PASSWORD, "accept_terms": "on", "certify": "on",
         })
         self.assertContains(response, "Formats acceptés")

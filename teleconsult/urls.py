@@ -9,6 +9,7 @@ urlpatterns = [
     path("consultations/<str:code>/", views.room, name="room"),
     path("consultations/<str:code>/messages/", views.chat, name="chat"),
     path("consultations/<str:code>/signal/", views.signal, name="signal"),
+    path("consultations/<str:code>/documents/", views.share_document, name="share_document"),
     path("consultations/<str:code>/terminer/", views.finish, name="finish"),
     path("consultations/<str:code>/compte-rendu/", views.summary, name="summary"),
     path("notifications/", views.notification_list, name="notifications"),

@@ -142,7 +142,6 @@ class DoctorSignupForm(BaseSignupForm):
     )
     diploma = forms.FileField(label="Diplôme de médecine")
     license_document = forms.FileField(label="Attestation d'inscription à l'Ordre")
-    id_document = forms.FileField(label="Pièce d'identité")
     certify = forms.BooleanField(
         label="Je certifie l'exactitude des informations et l'authenticité des documents fournis",
     )
@@ -169,8 +168,6 @@ class DoctorSignupForm(BaseSignupForm):
     def clean_license_document(self):
         return self._clean_document("license_document")
 
-    def clean_id_document(self):
-        return self._clean_document("id_document")
 
     @transaction.atomic
     def save(self):
@@ -187,7 +184,6 @@ class DoctorSignupForm(BaseSignupForm):
             bio=data.get("bio", ""),
             diploma=data["diploma"],
             license_document=data["license_document"],
-            id_document=data["id_document"],
         )
         return user
 

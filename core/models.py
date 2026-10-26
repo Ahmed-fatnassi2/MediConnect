@@ -63,9 +63,6 @@ class DoctorProfile(models.Model):
         upload_to="justificatifs/ordre/",
         validators=[DOCUMENT_VALIDATOR],
     )
-    id_document = models.FileField(
-        "pièce d'identité", upload_to="justificatifs/identite/", validators=[DOCUMENT_VALIDATOR]
-    )
 
     status = models.CharField("statut", max_length=10, choices=Status.choices, default=Status.PENDING)
     rejection_reason = models.TextField("motif du refus", blank=True)

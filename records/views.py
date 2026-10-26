@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.db.models import Count, Max, Q
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -27,7 +27,8 @@ from .forms import (
     PrescriptionItemFormSet,
     allergy_conflicts,
 )
-from .models import AccessLog, Drug, MedicalDocument, MedicalRecord, Prescription
+from .ai_analysis import start_analysis
+from .models import AccessLog, DocumentAnalysis, Drug, MedicalDocument, MedicalRecord, Prescription
 
 User = get_user_model()
 Action = AccessLog.Action
@@ -340,6 +341,77 @@ def document_file(request, pk):
     filename = document.original_name or f"document.{document.extension.lower()}"
     return FileResponse(handle, content_type=content_type, filename=filename,
                         as_attachment=request.GET.get("telecharger") == "1")
+
+
+@verified_doctor_required
+def document_analysis(request, pk):
+    """AI report on a patient's document, for the doctors who follow the patient."""
+    document = get_object_or_404(
+        MedicalDocument.objects.select_related("record__patient__patient_profile", "uploaded_by", "appointment"), pk=pk
+    )
+    record = document.record
+    if not access.doctor_follows(request.user, record.patient):
+        raise Http404
+    if request.method == "POST":
+        running = document.analyses.filter(status=DocumentAnalysis.Status.RUNNING)
+        if not any(a.is_running for a in running):
+            start_analysis(document, by=request.user)
+            access.log(request, record, Action.DOCUMENT_ANALYSIS, document.title)
+        return redirect("records:document_analysis", pk=document.pk)
+    analysis = document.analyses.first()
+    if analysis is None:
+        analysis = start_analysis(document, by=request.user)
+        access.log(request, record, Action.DOCUMENT_ANALYSIS, document.title)
+    room = getattr(document.appointment, "room", None) if document.appointment else None
+    context = {
+        **_layout(request, "doctor", "patients"),
+        "document": document,
+        "analysis": analysis,
+        "patient": record.patient,
+        "patient_age": TriageSession.age_from_birth_date(record.patient.patient_profile.date_of_birth),
+        "record": record,
+        "room": room,
+    }
+    return render(request, "records/document_analysis.html", context)
+
+
+def _analysis_json(document, analysis):
+    if analysis is None:
+        return {"status": "none"}
+    status = "error" if analysis.is_stale else ("running" if analysis.is_running else analysis.status)
+    return {
+        "status": status,
+        "document": document.title,
+        "document_type": analysis.document_type,
+        "exam_date": analysis.exam_date,
+        "readable": analysis.readable,
+        "summary": analysis.summary,
+        "abnormal_findings": analysis.abnormal_findings,
+        "points_to_check": analysis.points_to_check,
+        "abnormal_values": analysis.abnormal_values,
+        "values_count": len(analysis.values),
+        "error": analysis.error,
+        "report_url": reverse("records:document_analysis", args=[document.pk]),
+    }
+
+
+@verified_doctor_required
+def document_analysis_api(request, pk):
+    """Used by the "Lire avec l'IA" button in the consultation chat.
+    GET: current state of the AI reading. POST: start it (if not already running or done)."""
+    document = get_object_or_404(MedicalDocument.objects.select_related("record__patient"), pk=pk)
+    record = document.record
+    if not access.doctor_follows(request.user, record.patient):
+        raise Http404
+    analysis = document.analyses.first()
+    if request.method == "POST":
+        restart = request.POST.get("relancer") == "1"
+        if analysis is None or analysis.is_stale or analysis.status == DocumentAnalysis.Status.ERROR or (
+            restart and not analysis.is_running
+        ):
+            analysis = start_analysis(document, by=request.user)
+            access.log(request, record, Action.DOCUMENT_ANALYSIS, document.title)
+    return JsonResponse(_analysis_json(document, analysis))
 
 
 @login_required

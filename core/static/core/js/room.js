@@ -68,12 +68,184 @@
       meta.textContent = m.mine ? `Vous · ${m.time}` : `${m.sender} · ${m.time}`;
       const bubble = document.createElement("div");
       bubble.className = "msg-bubble";
-      bubble.textContent = m.body; // textContent: no HTML injection
+      if (m.kind === "document") renderDocument(bubble, m);
+      else bubble.textContent = m.body; // textContent: no HTML injection
       node.append(meta, bubble);
     }
     list.appendChild(node);
     if (nearBottom || m.mine) list.scrollTop = list.scrollHeight;
   }
+
+  function link(href, text, icon) {
+    const a = document.createElement("a");
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener";
+    if (icon) {
+      const i = document.createElement("i");
+      i.className = `bi bi-${icon}`;
+      a.append(i, " ");
+    }
+    a.append(text);
+    return a;
+  }
+
+  // A shared document: title, type, links (the doctor also gets the AI report)
+  function renderDocument(bubble, m) {
+    const doc = m.document;
+    bubble.classList.add("msg-doc");
+    const icon = document.createElement("i");
+    icon.className = "bi bi-file-earmark-medical";
+    const text = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = doc ? doc.title : m.body;
+    const info = document.createElement("span");
+    info.textContent = doc ? `${doc.kind} · ${doc.info}` : "Document supprimé";
+    text.append(title, info);
+    bubble.append(icon, text);
+    if (!doc) return;
+    const actions = document.createElement("div");
+    actions.className = "msg-doc-actions";
+    actions.append(link(doc.url, "Ouvrir"));
+    if (doc.analysis_api) {
+      const ai = document.createElement("button");
+      ai.type = "button";
+      ai.className = "msg-doc-ai";
+      ai.innerHTML = '<i class="bi bi-robot"></i> Lire avec l\'IA';
+      ai.addEventListener("click", () => openAiReading(doc));
+      actions.append(ai);
+    }
+    bubble.append(actions);
+  }
+
+  // ------------------------------------------------------------------
+  // "Lire avec l'IA" (doctor): the agent reads the document, the report
+  // is shown in a window inside the room.
+  // ------------------------------------------------------------------
+  const aiDialog = $("[data-ai-dialog]");
+  const aiBody = $("[data-ai-body]");
+  let aiCurrent = null; // document being shown
+  let aiTimer = null;
+
+  function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function aiSection(title, items, className) {
+    const section = el("section", null, `ai-section ${className || ""}`);
+    section.append(el("h4", title));
+    const ul = el("ul");
+    items.forEach((item) => ul.append(typeof item === "string" ? el("li", item) : item));
+    section.append(ul);
+    return section;
+  }
+
+  function renderAi(data) {
+    aiBody.replaceChildren();
+    $("[data-ai-rerun]").hidden = !["done", "error"].includes(data.status);
+    const full = $("[data-ai-full]");
+    full.hidden = data.status !== "done";
+    if (data.report_url) full.href = data.report_url;
+
+    if (data.status === "running" || data.status === "none") {
+      const wait = el("div", null, "ai-wait");
+      wait.append(el("span", null, "spinner spinner-dark"), el("strong", "L'IA lit le document…"),
+        el("p", "Le compte rendu s'affiche ici dans quelques secondes. Vous pouvez continuer la consultation."));
+      aiBody.append(wait);
+      return;
+    }
+    if (data.status === "error") {
+      aiBody.append(el("div", `L'analyse n'a pas pu aboutir. ${data.error || ""} Relancez-la ou lisez le document directement.`, "alert alert-danger"));
+      return;
+    }
+    const meta = [data.document_type, data.exam_date && `examen du ${data.exam_date}`].filter(Boolean).join(" · ");
+    if (meta) aiBody.append(el("p", meta, "ai-meta"));
+    if (!data.readable) aiBody.append(el("div", "Document illisible ou non médical.", "alert alert-danger"));
+    aiBody.append(el("p", data.summary, "ai-summary"));
+
+    if (data.abnormal_values.length) {
+      const items = data.abnormal_values.map((v) => {
+        const li = el("li");
+        const arrow = v.flag === "high" ? "↑" : v.flag === "low" ? "↓" : "!";
+        li.append(el("strong", `${arrow} ${v.name} : ${v.value} ${v.unit}`.trim()));
+        if (v.reference) li.append(el("span", ` (réf. ${v.reference})`, "text-muted"));
+        return li;
+      });
+      aiBody.append(aiSection(`Valeurs hors normes (${data.abnormal_values.length} sur ${data.values_count})`, items, "ai-abnormal"));
+    } else if (data.values_count) {
+      aiBody.append(el("p", `Les ${data.values_count} valeurs relevées sont dans les normes.`, "ai-meta"));
+    }
+    if (data.abnormal_findings.length) aiBody.append(aiSection("Anomalies relevées", data.abnormal_findings));
+    if (data.points_to_check.length) aiBody.append(aiSection("Points à vérifier", data.points_to_check));
+  }
+
+  async function loadAi(method, extra) {
+    if (!aiCurrent) return;
+    const doc = aiCurrent;
+    clearTimeout(aiTimer);
+    try {
+      const options = method === "POST"
+        ? { method, headers: { "X-CSRFToken": csrf }, body: new URLSearchParams(extra || {}) }
+        : { headers: { Accept: "application/json" } };
+      const res = await fetch(doc.analysis_api, options);
+      if (aiCurrent !== doc) return; // another document was opened meanwhile
+      const data = await res.json();
+      renderAi(data);
+      if (data.status === "running" && aiDialog.open) aiTimer = setTimeout(() => loadAi("GET"), 3000);
+    } catch (err) {
+      renderAi({ status: "error", error: "Connexion perdue." });
+    }
+  }
+
+  function openAiReading(doc) {
+    if (!aiDialog) return;
+    aiCurrent = doc;
+    $("[data-ai-doc]").textContent = doc.title;
+    renderAi({ status: "running" });
+    aiDialog.showModal();
+    loadAi("POST"); // starts the reading if it was never done
+  }
+
+  $("[data-ai-close]")?.addEventListener("click", () => aiDialog.close());
+  aiDialog?.addEventListener("close", () => { clearTimeout(aiTimer); aiCurrent = null; });
+  aiDialog?.addEventListener("click", (e) => { if (e.target === aiDialog) aiDialog.close(); }); // click outside
+  $("[data-ai-rerun]")?.addEventListener("click", () => {
+    renderAi({ status: "running" });
+    loadAi("POST", { relancer: "1" });
+  });
+
+  // Attach a document (lab results…) from the chat
+  const attachInput = $("[data-attach]");
+  const attachLabel = $("[data-attach-label]");
+  attachInput?.addEventListener("change", async () => {
+    const file = attachInput.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Le fichier dépasse 5 Mo.");
+      attachInput.value = "";
+      return;
+    }
+    const data = new FormData();
+    data.append("file", file);
+    attachLabel.classList.add("is-loading");
+    try {
+      const res = await fetch(root.dataset.shareUrl, { method: "POST", headers: { "X-CSRFToken": csrf }, body: data });
+      const json = await res.json();
+      if (res.ok) {
+        renderMessage(json.message);
+        applyState(json);
+      } else {
+        alert(json.error || "Document refusé.");
+      }
+    } catch (err) {
+      alert("Connexion perdue : document non envoyé.");
+    }
+    attachLabel.classList.remove("is-loading");
+    attachInput.value = "";
+  });
 
   function applyState(state) {
     const online = Boolean(state.other_online);
@@ -82,7 +254,8 @@
     if (state.status === "closed" && !closed) {
       closed = true;
       textarea.disabled = true;
-      form.querySelector("button").disabled = true;
+      form.querySelector("button[type=submit]").disabled = true;
+      if (attachInput) attachInput.disabled = true;
       hangUp(false);
       $("[data-room-closed]").hidden = false;
       const badge = $("[data-room-badge]");
@@ -106,7 +279,7 @@
     e.preventDefault();
     const body = textarea.value.trim();
     if (!body) return;
-    const button = form.querySelector("button");
+    const button = form.querySelector("button[type=submit]");
     button.disabled = true;
     try {
       const res = await fetch(chatUrl, {

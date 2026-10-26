@@ -32,6 +32,7 @@
       </div>
       {% endblock %}
       <div class="topbar-right">
+        <button type="button" class="icon-btn" data-a11y-open aria-label="Accessibilité (Alt+Maj+A)" title="Accessibilité (Alt+Maj+A)"><i class="bi bi-universal-access-circle"></i></button>
         <a href="{% url 'teleconsult:notifications' %}" class="icon-btn" aria-label="Notifications{% if unread_notifications %} ({{ unread_notifications }} non lues){% endif %}"><i class="bi bi-bell"></i>{% if unread_notifications %}<span class="dot"></span>{% endif %}</a>
         <a href="{% url 'account_profile' %}" class="user-chip" title="Mon compte">
           <span class="avatar">{{ user.first_name|slice:":1"|upper }}{{ user.last_name|slice:":1"|upper }}</span>
@@ -43,7 +44,7 @@
       </div>
     </header>
 
-    <main class="app-content">
+    <main class="app-content" id="contenu" tabindex="-1">
       {% include "core/partials/messages.html" %}
       {% block content %}{% endblock %}
     </main>

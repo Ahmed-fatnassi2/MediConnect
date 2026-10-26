@@ -23,4 +23,6 @@ urlpatterns = [
     path("ordonnances/<str:code>/", views.prescription_detail, name="prescription"),
     path("documents/<int:pk>/", views.document_file, name="document"),
     path("documents/<int:pk>/supprimer/", views.document_delete, name="document_delete"),
+    path("documents/<int:pk>/analyse-ia/", views.document_analysis, name="document_analysis"),
+    path("documents/<int:pk>/analyse-ia/donnees/", views.document_analysis_api, name="document_analysis_api"),
 ]

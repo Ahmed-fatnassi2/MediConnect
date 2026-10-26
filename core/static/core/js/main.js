@@ -156,6 +156,11 @@ document.addEventListener("DOMContentLoaded", () => {
     renumber();
   });
 
+  // Back-office: refresh while the doctor verification is running
+  if (document.querySelector("[data-reload-while-running]")) {
+    setTimeout(() => window.location.reload(), 4000);
+  }
+
   document.querySelectorAll("[data-loading-form]").forEach((form) => {
     form.addEventListener("submit", () => {
       const btn = form.querySelector("[data-loading-text]");
@@ -165,3 +170,112 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 });
+
+// --------------------------------------------------------------------------
+// Accessibility: text size, theme (light / dark / system), high contrast,
+// keyboard shortcuts. Settings live in this browser (localStorage) and are
+// applied by the inline script in base.html before the page is drawn.
+// --------------------------------------------------------------------------
+(() => {
+  const KEY = "mc-a11y";
+  const root = document.documentElement;
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+  const load = () => {
+    try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; }
+  };
+  const save = (prefs) => {
+    try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch (e) { /* private mode: applies to this page only */ }
+  };
+  let prefs = load();
+
+  function apply() {
+    if (prefs.size) root.setAttribute("data-text-size", prefs.size);
+    else root.removeAttribute("data-text-size");
+    const theme = prefs.theme || "light";
+    root.setAttribute("data-theme", theme === "system" ? (darkQuery.matches ? "dark" : "light") : theme);
+    if (prefs.contrast) root.setAttribute("data-contrast", "high");
+    else root.removeAttribute("data-contrast");
+  }
+  darkQuery.addEventListener?.("change", () => { if (prefs.theme === "system") apply(); });
+
+  const dialog = document.querySelector("[data-a11y-dialog]");
+
+  function syncControls() {
+    if (!dialog) return;
+    dialog.querySelectorAll("input[name=a11y-size]").forEach((i) => { i.checked = i.value === (prefs.size || ""); });
+    dialog.querySelectorAll("input[name=a11y-theme]").forEach((i) => { i.checked = i.value === (prefs.theme || "light"); });
+    dialog.querySelector("input[name=a11y-contrast]").checked = Boolean(prefs.contrast);
+  }
+
+  function openPanel(focusShortcuts) {
+    if (!dialog) return;
+    syncControls();
+    if (!dialog.open) dialog.showModal();
+    if (focusShortcuts) dialog.querySelector("[data-a11y-shortcuts]").scrollIntoView({ block: "start" });
+  }
+
+  if (dialog) {
+    dialog.addEventListener("change", (e) => {
+      const input = e.target;
+      if (input.name === "a11y-size") prefs.size = input.value || undefined;
+      else if (input.name === "a11y-theme") prefs.theme = input.value;
+      else if (input.name === "a11y-contrast") prefs.contrast = input.checked || undefined;
+      else return;
+      save(prefs);
+      apply();
+    });
+    dialog.querySelector("[data-a11y-reset]").addEventListener("click", () => {
+      prefs = {};
+      save(prefs);
+      apply();
+      syncControls();
+    });
+    dialog.querySelectorAll("[data-a11y-close]").forEach((b) => b.addEventListener("click", () => dialog.close()));
+    dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
+  }
+  document.querySelectorAll("[data-a11y-open]").forEach((b) => b.addEventListener("click", () => openPanel(false)));
+
+  // Skip link: move the focus into the main content
+  document.querySelector(".skip-link")?.addEventListener("click", () => {
+    setTimeout(() => document.getElementById("contenu")?.focus(), 0);
+  });
+
+  // Keyboard shortcuts: Alt + Shift + letter (physical key, so AZERTY works too)
+  let links = [];
+  try { links = JSON.parse(document.getElementById("a11y-shortcuts")?.textContent || "[]"); } catch (e) { /* none */ }
+  const pages = Object.fromEntries(links.map((s) => [`Key${s.key}`, s.url]));
+
+  const clickIfVisible = (selector) => {
+    const el = document.querySelector(selector);
+    if (el && !el.hidden && !el.disabled) { el.click(); return true; }
+    return false;
+  };
+  const roomActions = {
+    KeyM: () => clickIfVisible("[data-toggle-mic]"),
+    KeyV: () => clickIfVisible("[data-toggle-cam]"),
+    KeyT: () => {
+      const field = document.querySelector("[data-chat-form] textarea");
+      if (field && !field.disabled) { field.focus(); return true; }
+      return false;
+    },
+  };
+
+  const typing = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+
+  document.addEventListener("keydown", (e) => {
+    if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if (e.code === "KeyA") { e.preventDefault(); openPanel(false); return; }
+      if (roomActions[e.code] && document.querySelector("[data-room]")) {
+        if (roomActions[e.code]()) e.preventDefault();
+        return;
+      }
+      if (pages[e.code]) { e.preventDefault(); window.location.href = pages[e.code]; }
+      return;
+    }
+    if (e.key === "?" && !e.ctrlKey && !e.metaKey && !typing(document.activeElement) && !document.querySelector("dialog[open]")) {
+      e.preventDefault();
+      openPanel(true);
+    }
+  });
+})();

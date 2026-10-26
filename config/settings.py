@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'appointments',
     'teleconsult',
     'records',
+    'verification',
 ]
 
 MIDDLEWARE = [
@@ -128,6 +129,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+ASSET_VERSION = "2026-10-26.4"  # change it after editing CSS/JS (cache busting)
 
 # Uploaded files (doctor credentials). Never served publicly:
 # staff download them through a protected back-office view.
@@ -163,9 +165,35 @@ TRIAGE_AI_ENABLED = (
     and "test" not in sys.argv  # tests never call the real API
 )
 
+# Doctor verification agent (reads the credential documents with OpenAI vision).
+# Without a key, or if the API fails, only the server-side checks run.
+VERIFICATION_AI_ENABLED = (
+    os.getenv("VERIFICATION_AI_ENABLED", "true").lower() == "true"
+    and bool(OPENAI_API_KEY)
+    and "test" not in sys.argv
+)
+VERIFICATION_AI_TIMEOUT = int(os.getenv("VERIFICATION_AI_TIMEOUT", "90"))
+# Reading documents needs good vision: a larger model than the triage one by default.
+VERIFICATION_MODEL = os.getenv("VERIFICATION_MODEL", "gpt-4.1")
+VERIFICATION_ASYNC = "test" not in sys.argv  # run in a background thread (not during tests)
+
+# Document analysis agent (reads patients' lab results for the doctor).
+DOCUMENT_AI_ENABLED = (
+    os.getenv("DOCUMENT_AI_ENABLED", "true").lower() == "true"
+    and bool(OPENAI_API_KEY)
+    and "test" not in sys.argv
+)
+DOCUMENT_AI_MODEL = os.getenv("DOCUMENT_AI_MODEL", "gpt-4.1")
+DOCUMENT_AI_TIMEOUT = int(os.getenv("DOCUMENT_AI_TIMEOUT", "90"))
+DOCUMENT_AI_ASYNC = "test" not in sys.argv
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "handlers": {"console": {"class": "logging.StreamHandler"}},
-    "loggers": {"triage": {"handlers": ["console"], "level": "INFO"}},
+    "loggers": {
+        "triage": {"handlers": ["console"], "level": "INFO"},
+        "verification": {"handlers": ["console"], "level": "INFO"},
+        "records": {"handlers": ["console"], "level": "INFO"},
+    },
 }

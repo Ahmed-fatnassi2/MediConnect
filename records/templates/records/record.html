@@ -170,10 +170,11 @@
       <span class="icon-badge icon-badge-sm"><i class="bi bi-{{ d.icon }}"></i></span>
       <div class="list-main">
         <strong>{{ d.title }}</strong>
-        <span>{{ d.get_kind_display }}{% if d.document_date %} · {{ d.document_date|date:"j M Y" }}{% endif %} · {{ d.extension }}, {{ d.size_label }} · ajouté par {% if d.uploaded_by_id == patient.pk %}{% if role == "patient" %}vous{% else %}le patient{% endif %}{% elif d.uploaded_by_id == user.pk %}vous{% else %}Dr {{ d.uploaded_by.get_full_name }}{% endif %}</span>
+        <span>{% if d.appointment_id %}<i class="bi bi-camera-video"></i> Partagé en consultation · {% endif %}{{ d.get_kind_display }}{% if d.document_date %} · {{ d.document_date|date:"j M Y" }}{% endif %} · {{ d.extension }}, {{ d.size_label }} · ajouté par {% if d.uploaded_by_id == patient.pk %}{% if role == "patient" %}vous{% else %}le patient{% endif %}{% elif d.uploaded_by_id == user.pk %}vous{% else %}Dr {{ d.uploaded_by.get_full_name }}{% endif %}</span>
       </div>
       <div class="list-actions">
         <a href="{% url 'records:document' d.pk %}" target="_blank" rel="noopener" class="btn btn-light btn-sm"><i class="bi bi-eye"></i> Ouvrir</a>
+        {% if role == "doctor" %}<a href="{% url 'records:document_analysis' d.pk %}" class="btn btn-light btn-sm"><i class="bi bi-robot"></i> Compte rendu IA</a>{% endif %}
         <a href="{% url 'records:document' d.pk %}?telecharger=1" class="btn btn-ghost btn-sm" aria-label="Télécharger {{ d.title }}"><i class="bi bi-download"></i></a>
         {% if d.uploaded_by_id == user.pk %}
         <form method="post" action="{% url 'records:document_delete' d.pk %}" data-confirm="Supprimer « {{ d.title }} » ?" style="display:inline">

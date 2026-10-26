@@ -6,13 +6,15 @@ from functools import wraps
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.views import redirect_to_login
-from django.db.models import Count, Q
+from django.db.models import Count, OuterRef, Q, Subquery
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from triage.models import RedFlagRule, TriageLevel, TriageResult, TriageSession
+from verification.models import DoctorVerification
+from verification.services import start_verification
 
 from .forms import DoctorDecisionForm
 from .models import DoctorProfile, PatientProfile
@@ -22,7 +24,6 @@ User = get_user_model()
 DOCUMENT_FIELDS = {
     "diplome": "diploma",
     "ordre": "license_document",
-    "identite": "id_document",
 }
 
 
@@ -43,7 +44,6 @@ def _documents(doctor):
     labels = {
         "diplome": "Diplôme de médecine",
         "ordre": "Attestation d'inscription à l'Ordre",
-        "identite": "Pièce d'identité",
     }
     return [
         (kind, labels[kind], getattr(doctor, field))
@@ -59,6 +59,7 @@ def _detail_context(doctor, form):
         "doctor": doctor,
         "documents": _documents(doctor),
         "form": form,
+        "verification": doctor.verifications.select_related("triggered_by").first(),
     }
 
 
@@ -88,7 +89,10 @@ def overview(request):
 def doctor_list(request):
     status = request.GET.get("statut", "")
     query = request.GET.get("q", "").strip()
-    doctors = DoctorProfile.objects.select_related("user")
+    latest = DoctorVerification.objects.filter(doctor=OuterRef("pk"), status=DoctorVerification.Status.DONE)
+    doctors = DoctorProfile.objects.select_related("user").annotate(
+        ai_risk=Subquery(latest.values("risk")[:1])
+    )
     if status in DoctorProfile.Status.values:
         doctors = doctors.filter(status=status)
     if query:
@@ -133,6 +137,19 @@ def doctor_decision(request, pk):
         messages.success(request, f"Le dossier de {doctor} a été refusé.")
     doctor.reviewed_at = timezone.now()
     doctor.save(update_fields=["status", "rejection_reason", "reviewed_at"])
+    return redirect("backoffice:doctor_detail", pk=doctor.pk)
+
+
+@staff_required
+@require_POST
+def doctor_verify(request, pk):
+    """Run the automatic analysis again (e.g. after new documents)."""
+    doctor = get_object_or_404(DoctorProfile.objects.select_related("user"), pk=pk)
+    if any(v.is_running for v in doctor.verifications.filter(status=DoctorVerification.Status.RUNNING)):
+        messages.info(request, "Une analyse est déjà en cours.")
+    else:
+        start_verification(doctor, by=request.user)
+        messages.success(request, "Analyse lancée. Le résultat s'affiche dans quelques secondes.")
     return redirect("backoffice:doctor_detail", pk=doctor.pk)
 
 

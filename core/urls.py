@@ -8,6 +8,7 @@ backoffice_patterns = (
         path("medecins/", backoffice.doctor_list, name="doctor_list"),
         path("medecins/<int:pk>/", backoffice.doctor_detail, name="doctor_detail"),
         path("medecins/<int:pk>/decision/", backoffice.doctor_decision, name="doctor_decision"),
+        path("medecins/<int:pk>/analyse/", backoffice.doctor_verify, name="doctor_verify"),
         path("medecins/<int:pk>/documents/<str:kind>/", backoffice.doctor_document, name="doctor_document"),
         path("patients/", backoffice.patient_list, name="patient_list"),
         path("triage/", backoffice.triage_overview, name="triage"),

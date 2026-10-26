@@ -119,6 +119,9 @@ def signup_doctor(request):
     form = DoctorSignupForm(request.POST or None, request.FILES or None)
     if request.method == "POST" and form.is_valid():
         user = form.save()
+        from verification.services import start_verification
+
+        start_verification(user.doctor_profile)  # automatic pre-check for the back-office
         login(request, user, backend="django.contrib.auth.backends.ModelBackend")
         messages.success(
             request,
