@@ -1293,3 +1293,24 @@ html[data-contrast="high"] .text-muted, html[data-contrast="high"] .form-help { 
 .kbd-sub { margin: 0.9rem 0 0.3rem; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700; }
 kbd { display: inline-block; min-width: 1.6em; padding: 0.05rem 0.4rem; border: 1px solid var(--border-input); border-bottom-width: 2px; border-radius: 5px; background: var(--bg-alt); color: var(--text); font: 600 0.78rem/1.5 var(--font); text-align: center; }
 .auth-topbar .icon-btn, .nav-actions .icon-btn { flex-shrink: 0; }
+
+/* Pharma-Check decision-support findings */
+.pc-panel { margin-bottom: 1.25rem; }
+.pc-finding, .pc-ai-opinion {
+  padding: 0.75rem 0.85rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin: 0 0 0.65rem; background: var(--surface); color: var(--text);
+}
+.pc-finding strong, .pc-ai-opinion strong { display: block; margin-bottom: 0.25rem; }
+.pc-finding p, .pc-ai-opinion p { margin: 0.2rem 0 0; font-size: 0.88rem; }
+.pc-finding--danger { border-color: var(--red-border); background: var(--red-tint); color: var(--red-ink); }
+.pc-finding--moderate { border-color: #C47A11; background: #FFF6E8; color: #704000; }
+.pc-finding--info { border-color: #4B88B5; background: #EEF7FC; color: #174D70; }
+.pc-empty, .pc-ai-error { margin: 0 0 0.75rem; color: var(--text-2); font-size: 0.88rem; }
+.pc-ai-error { color: var(--red-ink); }
+.pc-ai-opinion { border-style: dashed; }
+html[data-theme="dark"] .pc-finding--moderate { border-color: #B8832F; background: #2A2213; color: #F0B95A; }
+html[data-theme="dark"] .pc-finding--info { border-color: #4B88B5; background: #152634; color: #91C9EB; }
+html[data-contrast="high"] .pc-finding,
+html[data-contrast="high"] .pc-ai-opinion {
+  border: 2px solid var(--text); background: var(--surface); color: var(--text);
+}

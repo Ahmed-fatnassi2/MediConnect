@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'appointments',
     'teleconsult',
     'records',
+    'pharmacheck',
     'verification',
 ]
 
@@ -129,7 +130,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
-ASSET_VERSION = "2026-10-26.4"  # change it after editing CSS/JS (cache busting)
+ASSET_VERSION = "2026-10-27.1"  # change it after editing CSS/JS (cache busting)
 
 # Uploaded files (doctor credentials). Never served publicly:
 # staff download them through a protected back-office view.
@@ -186,6 +187,16 @@ DOCUMENT_AI_ENABLED = (
 DOCUMENT_AI_MODEL = os.getenv("DOCUMENT_AI_MODEL", "gpt-4.1")
 DOCUMENT_AI_TIMEOUT = int(os.getenv("DOCUMENT_AI_TIMEOUT", "90"))
 DOCUMENT_AI_ASYNC = "test" not in sys.argv
+
+# Pharma-Check's optional second opinion. Deterministic rules always run without AI.
+PHARMACHECK_AI_ENABLED = (
+    os.getenv("PHARMACHECK_AI_ENABLED", "true").lower() == "true"
+    and bool(OPENAI_API_KEY)
+    and "test" not in sys.argv
+)
+PHARMACHECK_AI_MODEL = os.getenv("PHARMACHECK_AI_MODEL", "gpt-4.1-mini")
+PHARMACHECK_AI_TIMEOUT = int(os.getenv("PHARMACHECK_AI_TIMEOUT", "30"))
+PHARMACHECK_AI_ASYNC = "test" not in sys.argv
 
 LOGGING = {
     "version": 1,

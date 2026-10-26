@@ -1,6 +1,9 @@
 from django.contrib import admin
 
-from .models import AccessLog, ConsultationNote, Drug, MedicalDocument, MedicalRecord, Prescription, PrescriptionItem
+from .models import (
+    AccessLog, ConsultationNote, Contraindication, DoseLimit, Drug, DrugInteraction, MedicalDocument,
+    MedicalRecord, Prescription, PrescriptionCheck, PrescriptionItem,
+)
 
 
 @admin.register(MedicalRecord)
@@ -61,3 +64,31 @@ class AccessLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(DrugInteraction)
+class DrugInteractionAdmin(admin.ModelAdmin):
+    list_display = ("group_a", "group_b", "severity")
+    list_filter = ("severity",)
+    search_fields = ("group_a", "group_b", "advice")
+
+
+@admin.register(DoseLimit)
+class DoseLimitAdmin(admin.ModelAdmin):
+    list_display = ("dci", "max_daily_mg", "per_kg_daily_mg", "min_age_months", "max_age_months")
+    search_fields = ("dci", "note")
+
+
+@admin.register(Contraindication)
+class ContraindicationAdmin(admin.ModelAdmin):
+    list_display = ("group", "severity", "min_age_months", "max_age_months")
+    list_filter = ("severity",)
+    search_fields = ("group", "message")
+
+
+@admin.register(PrescriptionCheck)
+class PrescriptionCheckAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "record", "doctor", "prescription", "max_severity", "ai_status")
+    list_filter = ("max_severity", "ai_status")
+    search_fields = ("record__patient__first_name", "record__patient__last_name", "prescription__code")
+    readonly_fields = ("created_at", "findings", "ai_opinion")

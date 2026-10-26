@@ -167,7 +167,7 @@ class PrescriptionTests(RecordTestCase):
         self.assertContains(self.client.get(reverse("patient_dashboard")), prescription.code)
         self.assertContains(self.client.get(reverse("records:prescriptions")), "Paracétamol")
 
-    def test_allergy_requires_confirmation(self):
+    def test_allergy_requires_documented_override_reason(self):
         self.record.allergies = "Allergie aux pénicillines"
         self.record.save()
         self.login(self.doctor)
@@ -176,7 +176,12 @@ class PrescriptionTests(RecordTestCase):
         self.assertContains(response, "allergie possible")
         self.assertFalse(Prescription.objects.exists())
 
-        self.client.post(self.url(), self.prescription_data([self.amoxicilline], confirm_allergy="1"))
+        self.client.post(
+            self.url(),
+            self.prescription_data(
+                [self.amoxicilline], override_reason="Bénéfice clinique évalué par le médecin."
+            ),
+        )
         self.assertTrue(Prescription.objects.exists())
 
     def test_no_allergy_warning_for_unrelated_drug(self):

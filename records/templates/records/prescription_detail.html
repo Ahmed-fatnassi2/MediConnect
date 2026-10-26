@@ -11,9 +11,32 @@
   </div>
   <div class="room-head-actions">
     {% if prescription.is_valid %}<span class="badge badge-soft">Valable</span>{% else %}<span class="badge badge-neutral">Expirée</span>{% endif %}
+    {% if pharmacheck_check %}<span class="badge pc-detail-badge">Pharma-Check · {{ pharmacheck_check.get_max_severity_display }}</span>{% endif %}
     <button type="button" class="btn btn-primary" data-print><i class="bi bi-printer"></i> Imprimer / PDF</button>
   </div>
 </div>
+
+{% if pharmacheck_check %}
+<section class="card pc-detail no-print" aria-label="Résultats de Pharma-Check réservés au médecin">
+  <div class="card-header"><h3>Pharma-Check — aide à la décision</h3></div>
+  <div class="card-body">
+    {% for finding in pharmacheck_check.findings %}
+    <article class="pc-finding pc-finding--{% if finding.severity == 'major' or finding.severity == 'contraindicated' %}danger{% elif finding.severity == 'moderate' %}moderate{% else %}info{% endif %}">
+      <strong>{{ finding.severity_label }} · {{ finding.kind }}</strong>
+      <p>{{ finding.message }}</p>
+    </article>
+    {% empty %}
+    <p>Aucune alerte des règles configurées n'a été relevée. Cela ne garantit pas l'absence de risque.</p>
+    {% endfor %}
+    {% if pharmacheck_check.override_reason %}<p><strong>Motif de dérogation :</strong> {{ pharmacheck_check.override_reason }}</p>{% endif %}
+    {% if pharmacheck_check.ai_status == "done" %}
+    <p><strong>Avis IA · niveau final : {{ pharmacheck_check.ai_opinion.final_level }}</strong></p>
+    <p>{{ pharmacheck_check.ai_opinion.comment }}</p>
+    {% endif %}
+    <p class="small text-muted">Aide à la décision uniquement ; la décision appartient au médecin.</p>
+  </div>
+</section>
+{% endif %}
 
 <article class="card report prescription">
   <header class="report-head">

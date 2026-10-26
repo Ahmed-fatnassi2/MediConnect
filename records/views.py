@@ -1,5 +1,6 @@
 import mimetypes
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
@@ -13,6 +14,7 @@ from django.views.decorators.http import require_POST
 from appointments.views import verified_doctor_required
 from core.models import get_role
 from core.views import role_required
+from pharmacheck import engine as pharmacheck_engine
 from teleconsult.models import ConsultationSummary, Notification
 from teleconsult.services import notify
 from triage.models import TriageSession
@@ -28,7 +30,9 @@ from .forms import (
     allergy_conflicts,
 )
 from .ai_analysis import start_analysis
-from .models import AccessLog, DocumentAnalysis, Drug, MedicalDocument, MedicalRecord, Prescription
+from .models import (
+    AccessLog, DocumentAnalysis, Drug, MedicalDocument, MedicalRecord, Prescription, PrescriptionCheck,
+)
 
 User = get_user_model()
 Action = AccessLog.Action
@@ -248,10 +252,40 @@ def new_prescription(request, patient_id):
                             initial={"appointment": request.GET.get("rdv")})
     formset = PrescriptionItemFormSet(post, instance=Prescription(), prefix="items")
     conflicts = []
+    override_reason_error = ""
     if post is not None and form.is_valid() and formset.is_valid():
-        names = [f.cleaned_data["drug_name"] for f in formset.forms if f.cleaned_data.get("drug_name")]
+        draft_items = [
+            item_form.save(commit=False)
+            for item_form in formset.forms
+            if item_form.cleaned_data.get("drug_name")
+        ]
+        names = [item.drug_name for item in draft_items]
         conflicts = allergy_conflicts(record, names)
-        if not conflicts or post.get("confirm_allergy"):
+        findings = pharmacheck_engine.check(record, draft_items)
+        override_reason = post.get("override_reason", "").strip()
+        safety_check = PrescriptionCheck.objects.create(
+            record=record,
+            doctor=request.user,
+            findings=findings,
+            checked_items=[
+                {
+                    "drug_name": item.drug_name,
+                    "dosage": item.dosage,
+                    "frequency": item.frequency,
+                    "duration": item.duration,
+                }
+                for item in draft_items
+            ],
+            max_severity=pharmacheck_engine.max_severity(findings),
+            override_reason=override_reason,
+        )
+        access.log(
+            request, record, Action.PRESCRIPTION_CHECK, f"Vérification Pharma-Check {safety_check.pk}"
+        )
+        if pharmacheck_engine.requires_override(findings) and len(override_reason) < 10:
+            override_reason_error = "Pour enregistrer malgré une alerte majeure ou contre-indiquée, indiquez un motif d'au moins 10 caractères."
+            form.add_error(None, override_reason_error)
+        else:
             with transaction.atomic():
                 prescription = form.save(commit=False)
                 prescription.record = record
@@ -259,6 +293,8 @@ def new_prescription(request, patient_id):
                 prescription.save()
                 formset.instance = prescription
                 formset.save()
+                safety_check.prescription = prescription
+                safety_check.save(update_fields=["prescription"])
             access.log(request, record, Action.PRESCRIPTION, prescription.code)
             notify(
                 record.patient, Notification.Kind.PRESCRIPTION, "Nouvelle ordonnance",
@@ -270,6 +306,8 @@ def new_prescription(request, patient_id):
     context = {
         **_layout(request, "doctor", "patients"),
         "form": form, "formset": formset, "record": record, "conflicts": conflicts,
+        "override_reason_error": override_reason_error,
+        "pharmacheck_ai_enabled": settings.PHARMACHECK_AI_ENABLED,
         "back": _record_url(record, "doctor", "ordonnances"),
         "suggestions": Drug.objects.filter(is_active=True),
         "datalist_id": DRUG_DATALIST_ID,
@@ -323,6 +361,10 @@ def prescription_detail(request, code):
         "patient_age": TriageSession.age_from_birth_date(patient.patient_profile.date_of_birth),
         "record": record,
         "back": reverse("records:prescriptions") if role == "patient" else _record_url(record, role, "ordonnances"),
+        "pharmacheck_check": (
+            prescription.safety_checks.filter(doctor=request.user).first()
+            if role == "doctor" and request.user == prescription.doctor else None
+        ),
     }
     return render(request, "records/prescription_detail.html", context)
 

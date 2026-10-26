@@ -13,7 +13,9 @@
 
 <div class="dash-grid">
   <div class="col-8">
-    <form method="post" novalidate data-loading-form>
+    <form method="post" novalidate data-loading-form data-pharmacheck
+          data-check-url="{% url 'pharmacheck:verify' %}" data-record-id="{{ record.pk }}"
+          data-ai-enabled="{{ pharmacheck_ai_enabled|yesno:'true,false' }}">
       {% csrf_token %}
       {% include "core/partials/form_errors.html" %}
       {{ formset.management_form }}
@@ -51,13 +53,17 @@
               <p style="margin:.35rem 0 0">Médicament{{ conflicts|length|pluralize }} concerné{{ conflicts|length|pluralize }} : {% for d in conflicts %}<strong>{{ d.name }}</strong>{% if d.drug_class %} ({{ d.drug_class }}){% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}.</p>
             </div>
           </div>
-          <div class="form-group">
-            <div class="form-check">
-              <input type="checkbox" name="confirm_allergy" id="confirm_allergy" value="1" class="form-check-input">
-              <label for="confirm_allergy">J'ai vérifié : je maintiens cette prescription malgré l'allergie signalée.</label>
-            </div>
-          </div>
           {% endif %}
+
+          <div class="form-group">
+            <label for="override_reason">Motif de dérogation <span class="text-muted">(requis pour une alerte majeure ou contre-indiquée)</span></label>
+            <textarea name="override_reason" id="override_reason" class="form-control" rows="2" maxlength="2000"
+                      aria-describedby="override-reason-help">{% if request.method == "POST" %}{{ request.POST.override_reason }}{% endif %}</textarea>
+            <small id="override-reason-help" class="form-help">
+              Un motif d'au moins 10 caractères est exigé pour enregistrer malgré une alerte majeure ou contre-indiquée.
+            </small>
+            {% if override_reason_error %}<p class="form-error" role="alert">{{ override_reason_error }}</p>{% endif %}
+          </div>
 
           <div class="wizard-actions">
             <a href="{{ back }}" class="btn btn-ghost">Annuler</a>
@@ -69,6 +75,27 @@
   </div>
 
   <div class="col-4">
+    <section class="card pc-panel" aria-labelledby="pharmacheck-title">
+      <div class="card-header">
+        <h3 id="pharmacheck-title"><i class="bi bi-shield-check"></i> Pharma-Check</h3>
+        <span class="small text-muted">Règles de soutien, à vérifier</span>
+      </div>
+      <div class="card-body">
+        <p class="small text-muted">Aide à la décision uniquement : le médecin reste responsable de sa prescription.</p>
+        <div data-pharmacheck-results aria-live="polite" aria-atomic="false">
+          <p class="small text-muted">Saisissez un médicament pour lancer les vérifications.</p>
+        </div>
+        {% if pharmacheck_ai_enabled %}
+        <button type="button" class="btn btn-light" data-pharmacheck-ai disabled>
+          <i class="bi bi-stars"></i> Avis IA (seconde lecture)
+        </button>
+        <p class="small text-muted" data-pharmacheck-ai-status></p>
+        {% else %}
+        <p class="small text-muted">Avis IA indisponible ; les règles locales restent actives.</p>
+        {% endif %}
+      </div>
+    </section>
+
     <section class="card">
       <div class="card-header"><h3><i class="bi bi-person"></i> Patient</h3></div>
       <div class="card-body">
@@ -82,4 +109,118 @@
     </section>
   </div>
 </div>
+<script>
+(() => {
+  const form = document.querySelector("[data-pharmacheck]");
+  if (!form) return;
+  const results = form.parentElement.parentElement.querySelector("[data-pharmacheck-results]");
+  const aiButton = form.parentElement.parentElement.querySelector("[data-pharmacheck-ai]");
+  const aiStatus = form.parentElement.parentElement.querySelector("[data-pharmacheck-ai-status]");
+  const overrideReason = form.querySelector("[name='override_reason']");
+  const csrf = form.querySelector("[name='csrfmiddlewaretoken']").value;
+  let latestCheckId = null;
+  let timer = null;
+  let requestNumber = 0;
+
+  const collectItems = () => Array.from(form.querySelectorAll("[data-formset-rows] input[name$='-drug_name']"))
+    .map(input => {
+      const prefix = input.name.replace(/drug_name$/, "");
+      return {
+        drug_name: input.value.trim(),
+        dosage: form.elements.namedItem(prefix + "dosage")?.value || "",
+        frequency: form.elements.namedItem(prefix + "frequency")?.value || "",
+        duration: form.elements.namedItem(prefix + "duration")?.value || ""
+      };
+    }).filter(item => item.drug_name);
+
+  const appendText = (parent, tag, text, className) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = text;
+    parent.appendChild(node);
+    return node;
+  };
+
+  const render = data => {
+    results.replaceChildren();
+    overrideReason.required = ["major", "contraindicated"].includes(data.max_severity);
+    overrideReason.setAttribute("aria-required", String(overrideReason.required));
+    if (!data.findings.length) {
+      appendText(results, "p", "Aucune alerte des règles configurées pour les lignes reconnues. Cela ne garantit pas l'absence de risque.", "pc-empty");
+    }
+    data.findings.forEach(finding => {
+      const card = document.createElement("article");
+      card.className = "pc-finding pc-finding--" + (["major", "contraindicated"].includes(finding.severity) ? "danger" : finding.severity === "moderate" ? "moderate" : "info");
+      appendText(card, "strong", finding.severity_label + " · " + finding.kind.replaceAll("_", " "));
+      appendText(card, "p", finding.message);
+      results.appendChild(card);
+    });
+    if (data.ai_opinion && data.ai_status === "done") {
+      const opinion = document.createElement("section");
+      opinion.className = "pc-ai-opinion";
+      appendText(opinion, "strong", "Avis IA — niveau final : " + data.final_level);
+      appendText(opinion, "p", data.ai_opinion.comment || "");
+      (data.ai_opinion.additional_concerns || []).forEach(text => appendText(opinion, "p", text));
+      (data.ai_opinion.alternatives || []).forEach(text => appendText(opinion, "p", text));
+      results.appendChild(opinion);
+    }
+    if (data.ai_status === "error" && data.ai_error) appendText(results, "p", data.ai_error, "pc-ai-error");
+    if (aiButton) aiButton.disabled = !data.check_id || data.ai_status === "running" || !form.dataset.aiEnabled || form.dataset.aiEnabled !== "true";
+    latestCheckId = data.check_id;
+  };
+
+  const send = async (ai = false, checkId = null, number = requestNumber) => {
+    const body = checkId
+      ? {record_id: Number(form.dataset.recordId), check_id: checkId}
+      : {record_id: Number(form.dataset.recordId), items: collectItems(), ai};
+    const response = await fetch(form.dataset.checkUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json", "X-CSRFToken": csrf},
+      body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "La vérification n'a pas abouti.");
+    if (number === requestNumber) render(data);
+    return data;
+  };
+
+  form.addEventListener("input", () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      requestNumber += 1;
+      try {
+        await send(false, null, requestNumber);
+      } catch (error) {
+        results.replaceChildren();
+        appendText(results, "p", error.message, "pc-ai-error");
+      }
+    }, 400);
+  });
+
+  if (aiButton) aiButton.addEventListener("click", async () => {
+    aiButton.disabled = true;
+    aiStatus.textContent = "Avis IA en cours…";
+    requestNumber += 1;
+    const number = requestNumber;
+    try {
+      let data = await send(true, null, number);
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (data.ai_status === "running" && Date.now() < deadline) {
+        await new Promise(resolve => window.setTimeout(resolve, 1200));
+        data = await send(false, data.check_id, number);
+      }
+      if (data.ai_status === "done") aiStatus.textContent = "Seconde lecture terminée. Le niveau final ne peut pas être inférieur aux alertes des règles.";
+      else if (data.ai_status === "error") aiStatus.textContent = data.ai_error || "Avis IA indisponible ; les résultats des règles restent affichés.";
+      else aiStatus.textContent = "Délai d'attente dépassé ; les résultats des règles restent affichés.";
+    } catch (error) {
+      aiStatus.textContent = error.message;
+    } finally {
+      aiButton.disabled = !latestCheckId;
+    }
+  });
+
+  if (collectItems().length) form.dispatchEvent(new Event("input", {bubbles: true}));
+})();
+</script>
 {% endblock %}
