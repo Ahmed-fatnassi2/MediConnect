@@ -25,7 +25,11 @@ load_dotenv(BASE_DIR / ".env")
 def env_bool(name, default=False):
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
-ON_VERCEL = bool(os.getenv("VERCEL"))
+ON_VERCEL = bool(
+    os.getenv("VERCEL")
+    or os.getenv("VERCEL_URL")
+    or os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+)
 
 
 # Quick-start development settings - unsuitable for production
@@ -39,12 +43,12 @@ if not SECRET_KEY:
     SECRET_KEY = 'django-insecure-76y0i_b2c&-)yi3r3f-u(l%boff9zy1ui^bqhqgw=_5axrsk98'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env_bool("DJANGO_DEBUG", not ON_VERCEL)
+DEBUG = False if ON_VERCEL else env_bool("DJANGO_DEBUG", True)
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()]
 if ON_VERCEL:
     ALLOWED_HOSTS.extend(host for host in (os.getenv("VERCEL_URL"), os.getenv("VERCEL_PROJECT_PRODUCTION_URL")) if host)
-    ALLOWED_HOSTS = list(dict.fromkeys([".vercel.app", *ALLOWED_HOSTS]))
+    ALLOWED_HOSTS = list(dict.fromkeys([".vercel.app", "mediconnect-tawny.vercel.app", *ALLOWED_HOSTS]))
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]
 if ON_VERCEL:
     CSRF_TRUSTED_ORIGINS.append("https://*.vercel.app")
