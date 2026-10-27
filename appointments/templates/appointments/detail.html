@@ -138,6 +138,11 @@
         </dl>
         {% if appointment.status == "confirmed" or appointment.status == "completed" %}
         <a href="{% url 'records:patient_record' appointment.patient_id %}" class="btn btn-light btn-block" style="margin-top:1rem"><i class="bi bi-folder2-open"></i> Dossier médical</a>
+        {% if appointment.follow_up_plan %}
+        <a href="{% url 'followups:detail' appointment.follow_up_plan.pk %}" class="btn btn-light btn-block" style="margin-top:.5rem"><i class="bi bi-list-check"></i> Voir le plan de suivi</a>
+        {% else %}
+        <a href="{% url 'followups:create_plan' appointment.patient_id appointment.pk %}" class="btn btn-primary btn-block" style="margin-top:.5rem"><i class="bi bi-plus-circle"></i> Créer un plan de suivi</a>
+        {% endif %}
         {% endif %}
       </div>
       {% endwith %}

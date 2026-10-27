@@ -16,6 +16,7 @@ from records.models import (
     MedicalRecord,
     Prescription,
     PrescriptionCheck,
+    PatientInstructions,
 )
 
 from . import ai_agent, engine
@@ -117,7 +118,10 @@ class PharmacheckTests(TestCase):
     def test_unparseable_dose_is_reported_as_information(self):
         DoseLimit.objects.create(dci="paracetamol", max_daily_mg=3000, note="Démonstration.")
         findings = engine.check(self.record, [self._item("Paracétamol", "selon besoin")])
-        self.assertTrue(any(f["kind"] == "dose_unparsed" and f["severity"] == "info" for f in findings))
+        self.assertTrue(
+            any(f["kind"] == "dose_unparsed" and f["severity"] == "info" for f in findings),
+            repr(findings),
+        )
 
     def test_age_and_condition_contraindications_are_reported(self):
         child = self._patient("young@pharmacheck.test", date.today().replace(year=date.today().year - 8))
@@ -127,7 +131,9 @@ class PharmacheckTests(TestCase):
             message="Démonstration : vérifier l'âge.",
         )
         findings = engine.check(record, [self._item("Aspirine")])
-        self.assertTrue(any(f["kind"] == "contraindication" for f in findings))
+        self.assertTrue(
+            any(f["kind"] == "contraindication" for f in findings), repr(findings)
+        )
 
     def test_prescription_save_requires_and_records_severe_override(self):
         self.record.allergies = "Pénicilline"
@@ -204,8 +210,8 @@ class PharmacheckTests(TestCase):
             status=DoctorProfile.Status.VERIFIED,
         )
         self.client.force_login(other)
-        response = self.client.post(url, payload, content_type="application/json")
-        self.assertEqual(response.status_code, 403)
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
 
     def test_mocked_ai_opinion_can_only_raise_rules_level(self):
         check = PrescriptionCheck.objects.create(
@@ -216,9 +222,10 @@ class PharmacheckTests(TestCase):
         )
         opinion = ai_agent.PharmacheckOpinion(
             overall_level="info",
-            additional_concerns=[],
-            alternatives=["Réévaluer l'option thérapeutique avec le médecin."],
-            comment="Seconde lecture prudente.",
+            resolved_drugs=[],
+            extra_findings=[],
+            alternatives=[],
+            pharmacist_comment="Seconde lecture prudente.",
         )
         with patch("pharmacheck.ai_agent.run_agent", return_value=opinion):
             ai_agent.analyse(check)
@@ -227,14 +234,154 @@ class PharmacheckTests(TestCase):
         self.assertEqual(check.ai_opinion["final_level"], "major")
         raised_opinion = ai_agent.PharmacheckOpinion(
             overall_level="contraindicated",
-            additional_concerns=[],
+            resolved_drugs=[],
+            extra_findings=[],
             alternatives=[],
-            comment="Réévaluation médicale recommandée.",
+            pharmacist_comment="Réévaluation médicale recommandée.",
         )
         with patch("pharmacheck.ai_agent.run_agent", return_value=raised_opinion):
             ai_agent.analyse(check)
         check.refresh_from_db()
         self.assertEqual(check.ai_opinion["final_level"], "contraindicated")
+
+    def test_ai_failure_keeps_rule_findings(self):
+        check = PrescriptionCheck.objects.create(
+            record=self.record,
+            doctor=self.doctor,
+            max_severity="major",
+            findings=[{"kind": "interaction", "severity": "major"}],
+        )
+        with patch("pharmacheck.ai_agent.run_agent", side_effect=RuntimeError("provider unavailable")):
+            ai_agent.analyse(check)
+        check.refresh_from_db()
+        self.assertEqual(check.ai_status, PrescriptionCheck.AIStatus.ERROR)
+        self.assertEqual(check.findings[0]["severity"], "major")
+        self.assertEqual(check.max_severity, "major")
+
+    def test_resolver_confirmation_is_used_by_the_rules_engine(self):
+        self.record.current_treatments = "Warfarine"
+        self.record.save()
+        interaction = DrugInteraction.objects.create(
+            group_a="warfarine", group_b="AINS",
+            severity=DrugInteraction.Severity.MAJOR, advice="Association à réévaluer.",
+        )
+        source = PrescriptionCheck.objects.create(
+            record=self.record,
+            doctor=self.doctor,
+            checked_items=[self._item("voltaren")],
+            findings=[{"kind": "unresolved", "severity": "info", "medications": ["voltaren"]}],
+            ai_status=PrescriptionCheck.AIStatus.DONE,
+            ai_opinion={
+                "resolved_drugs": [{
+                    "typed": "voltaren",
+                    "dci": "diclofenac",
+                    "drug_class": "ains",
+                    "confidence": 0.92,
+                    "note": "Nom proche d'une marque connue.",
+                    "based_on": ["traitement en cours"],
+                }],
+                "final_level": "info",
+            },
+        )
+        payload = {
+            "record_id": self.record.pk,
+            "items": [self._item("voltaren")],
+            "confirmed_resolutions": [{
+                "typed": "voltaren",
+                "dci": "diclofenac",
+                "drug_class": "ains",
+                "source_check_id": source.pk,
+            }],
+        }
+        self.client.force_login(self.doctor)
+        response = self.client.post(
+            reverse("pharmacheck:verify"), payload, content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            any(finding["kind"] == "interaction" for finding in response.json()["findings"]),
+            f"Expected interaction rule {interaction.pk} to match the confirmed DCI.",
+        )
+        result = PrescriptionCheck.objects.exclude(pk=source.pk).latest("created_at")
+        self.assertEqual(result.confirmed_resolutions[0]["dci"], "diclofenac")
+
+    def test_ai_only_finding_does_not_block_prescription_save(self):
+        PrescriptionCheck.objects.create(
+            record=self.record,
+            doctor=self.doctor,
+            max_severity="major",
+            findings=[],
+            ai_opinion={
+                "final_level": "major",
+                "extra_findings": [{
+                    "kind": "other", "severity": "major", "title": "IA",
+                    "detail": "Piste uniquement IA.",
+                }],
+            },
+            ai_status=PrescriptionCheck.AIStatus.DONE,
+        )
+        self.client.force_login(self.doctor)
+        response = self.client.post(
+            reverse("records:new_prescription", args=[self.patient.pk]),
+            {
+                "appointment": self.appointment.pk,
+                "valid_until": (timezone.localdate() + timedelta(days=20)).isoformat(),
+                "items-TOTAL_FORMS": "1", "items-INITIAL_FORMS": "0",
+                "items-MIN_NUM_FORMS": "1", "items-MAX_NUM_FORMS": "10",
+                "items-0-drug_name": "paracetamol",
+                "items-0-dosage": "500 mg", "items-0-frequency": "1 fois par jour",
+                "items-0-duration": "5 jours",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Prescription.objects.exists())
+
+    def test_non_following_doctor_gets_not_found_for_prescription_form(self):
+        other = User.objects.create_user("other-doctor@pharmacheck.test", "other-doctor@pharmacheck.test", "Test-pass-2026!")
+        DoctorProfile.objects.create(
+            user=other,
+            phone="0600000000",
+            specialty=DoctorProfile.Specialty.GENERAL,
+            license_number="ORD-PC-3",
+            city="Tunis",
+            status=DoctorProfile.Status.VERIFIED,
+        )
+        self.client.force_login(other)
+        response = self.client.get(reverse("records:new_prescription", args=[self.patient.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_patient_instructions_are_hidden_until_doctor_approval(self):
+        prescription = Prescription.objects.create(record=self.record, doctor=self.doctor)
+        instructions = PatientInstructions.objects.create(
+            prescription=prescription,
+            text_fr="Prenez le médicament comme indiqué.",
+            text_ar="تناول الدواء حسب التعليمات.",
+            generation_status=PatientInstructions.GenerationStatus.DONE,
+        )
+        url = reverse("records:prescription", args=[prescription.code])
+        self.client.force_login(self.patient)
+        response = self.client.get(url)
+        self.assertNotContains(response, "Prenez le médicament comme indiqué.")
+        self.assertNotContains(response, "تناول الدواء حسب التعليمات.")
+
+        self.client.force_login(self.doctor)
+        response = self.client.post(
+            reverse("records:patient_instructions", args=[prescription.code]),
+            {
+                "text_fr": instructions.text_fr,
+                "text_ar": instructions.text_ar,
+                "instruction_action": "approve",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        instructions.refresh_from_db()
+        self.assertEqual(instructions.status, PatientInstructions.Status.APPROVED)
+
+        self.client.force_login(self.patient)
+        response = self.client.get(url)
+        self.assertContains(response, "Prenez le médicament comme indiqué.")
+        self.assertContains(response, "تناول الدواء حسب التعليمات.")
+        self.assertContains(response, "Rédigé avec l'aide d'une IA et validé par votre médecin")
 
 
 class RuleSeverityTests(TestCase):

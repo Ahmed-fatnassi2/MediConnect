@@ -311,12 +311,14 @@ class AccessLog(models.Model):
         DOCUMENT_DELETE = "document_delete", "Suppression d'un document"
         DOCUMENT_ANALYSIS = "document_analysis", "Analyse IA d'un document"
         PRESCRIPTION_CHECK = "prescription_check", "Vérification de sécurité d'une ordonnance"
+        RX_INSTRUCTIONS = "rx_instructions", "Consultation des consignes de prescription"
 
     ICONS = {
         "view": "eye", "update": "pencil", "note": "journal-text", "prescription": "prescription2",
         "prescription_view": "prescription2", "document_add": "file-earmark-plus",
         "document_view": "file-earmark", "document_delete": "trash", "document_analysis": "robot",
         "prescription_check": "shield-check",
+        "rx_instructions": "translate",
     }
 
     record = models.ForeignKey(
@@ -483,6 +485,7 @@ class PrescriptionCheck(models.Model):
     )
     findings = models.JSONField("alertes de règles", default=list, blank=True)
     checked_items = models.JSONField("médicaments vérifiés", default=list, blank=True)
+    confirmed_resolutions = models.JSONField("médicaments reconnus et confirmés", default=list, blank=True)
     max_severity = models.CharField(
         "gravité maximale", max_length=20, choices=DrugInteraction.Severity.choices,
         default=DrugInteraction.Severity.INFO,
@@ -494,6 +497,7 @@ class PrescriptionCheck(models.Model):
     )
     ai_error = models.CharField("erreur IA", max_length=300, blank=True)
     ai_model = models.CharField("modèle IA", max_length=60, blank=True)
+    ai_cache_key = models.CharField("clé de cache IA", max_length=64, blank=True)
     created_at = models.DateTimeField("créé le", auto_now_add=True)
 
     class Meta:
@@ -511,4 +515,47 @@ class PrescriptionCheck(models.Model):
         return (
             self.ai_status == self.AIStatus.RUNNING
             and timezone.now() - self.created_at >= self.STALE_AFTER
+        )
+
+
+class PatientInstructions(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Brouillon"
+        APPROVED = "approved", "Approuvées"
+
+    class GenerationStatus(models.TextChoices):
+        RUNNING = "running", "En cours"
+        DONE = "done", "Terminée"
+        ERROR = "error", "Échec"
+
+    prescription = models.OneToOneField(
+        Prescription, on_delete=models.CASCADE, related_name="patient_instructions", verbose_name="ordonnance"
+    )
+    text_fr = models.TextField("consignes en français", blank=True)
+    text_ar = models.TextField("consignes en arabe", blank=True)
+    status = models.CharField("validation", max_length=10, choices=Status.choices, default=Status.DRAFT)
+    generation_status = models.CharField(
+        "génération IA", max_length=10, choices=GenerationStatus.choices, default=GenerationStatus.RUNNING
+    )
+    generation_error = models.CharField("erreur de génération", max_length=300, blank=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="approved_patient_instructions", verbose_name="validées par",
+    )
+    approved_at = models.DateTimeField("validées le", null=True, blank=True)
+    created_at = models.DateTimeField("créées le", auto_now_add=True)
+    updated_at = models.DateTimeField("modifiées le", auto_now=True)
+
+    class Meta:
+        verbose_name = "consignes patient de prescription"
+        verbose_name_plural = "consignes patient de prescription"
+
+    def __str__(self):
+        return f"Consignes patient · {self.prescription.code}"
+
+    @property
+    def is_generation_stale(self):
+        return (
+            self.generation_status == self.GenerationStatus.RUNNING
+            and timezone.now() - self.updated_at >= PrescriptionCheck.STALE_AFTER
         )

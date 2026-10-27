@@ -22,6 +22,7 @@ ALIASES = {
     "warfarine": ("warfarine", "anticoagulants"),
     "warfarin": ("warfarine", "anticoagulants"),
     "aspirine": ("aspirine", "antiagregants"),
+    "aspirin": ("aspirine", "antiagregants"),
     "acide acetylsalicylique": ("aspirine", "antiagregants"),
     "clarithromycine": ("clarithromycine", "macrolides"),
     "clarithromycin": ("clarithromycine", "macrolides"),
@@ -167,8 +168,6 @@ def resolve_drug(text, linked_drug=None, catalog=()):
     names = {normalize_text(value): (entry, name, dci, drug_class, strength)
              for entry, name, dci, drug_class, strength in candidates
              for value in (name, dci) if normalize_text(value)}
-    for alias, (dci, drug_class) in ALIASES.items():
-        names[alias] = (None, dci, dci, drug_class, "")
     match = difflib.get_close_matches(typed, names.keys(), n=1, cutoff=0.9)
     if match:
         entry, name, dci, drug_class, strength = names[match[0]]

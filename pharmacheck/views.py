@@ -9,6 +9,7 @@ from records import access
 from records.models import AccessLog, MedicalRecord, PrescriptionCheck
 
 from . import ai_agent, engine
+from .matching import normalize_text
 
 
 def _failure(message, status):
@@ -21,11 +22,83 @@ def _response(check):
         "check_id": check.pk,
         "findings": check.findings,
         "max_severity": check.max_severity,
+        "rules_severity": engine.max_severity(check.findings),
         "ai_status": check.ai_status,
         "ai_error": check.ai_error,
         "ai_opinion": opinion,
         "final_level": opinion.get("final_level", check.max_severity),
     })
+
+
+def validate_confirmed_resolutions(record, doctor, values, current_items):
+    if not isinstance(values, list):
+        raise ValueError("Les confirmations de médicaments sont invalides.")
+    current_names = {normalize_text(item["drug_name"]) for item in current_items}
+    confirmed = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("Une confirmation de médicament est invalide.")
+        try:
+            source_id = int(value.get("source_check_id"))
+        except (TypeError, ValueError):
+            raise ValueError("La vérification IA associée à une confirmation est invalide.") from None
+        typed = str(value.get("typed", "")).strip()
+        if not typed or normalize_text(typed) not in current_names:
+            raise ValueError("La confirmation ne correspond pas à un médicament saisi.")
+        source = PrescriptionCheck.objects.filter(
+            pk=source_id,
+            record=record,
+            doctor=doctor,
+            ai_status=PrescriptionCheck.AIStatus.DONE,
+        ).first()
+        if source is None:
+            raise ValueError("La suggestion IA doit être confirmée depuis son résultat d'origine.")
+        suggestion = next(
+            (
+                item for item in (source.ai_opinion or {}).get("resolved_drugs", [])
+                if normalize_text(item.get("typed")) == normalize_text(typed)
+            ),
+            None,
+        )
+        if suggestion is None:
+            raise ValueError("Aucune suggestion IA correspondante n'a été trouvée.")
+        if (
+            normalize_text(value.get("dci")) != normalize_text(suggestion["dci"])
+            or normalize_text(value.get("drug_class")) != normalize_text(suggestion["drug_class"])
+        ):
+            raise ValueError("La DCI confirmée ne correspond pas à la suggestion affichée.")
+        if normalize_text(typed) not in seen:
+            confirmed.append({
+                "typed": suggestion["typed"],
+                "dci": suggestion["dci"],
+                "drug_class": suggestion["drug_class"],
+                "confidence": suggestion["confidence"],
+                "note": suggestion["note"],
+                "based_on": suggestion.get("based_on", []),
+                "source_check_id": source.pk,
+            })
+            seen.add(normalize_text(typed))
+    return confirmed
+
+
+def valid_ai_source_check(record, doctor, source_id, current_items):
+    try:
+        source_id = int(source_id)
+    except (TypeError, ValueError):
+        return None
+    source = PrescriptionCheck.objects.filter(
+        pk=source_id,
+        record=record,
+        doctor=doctor,
+        ai_status=PrescriptionCheck.AIStatus.DONE,
+    ).first()
+    if source is None or source.checked_items != current_items or not source.ai_cache_key:
+        return None
+    expected_key = ai_agent.cache_key_for(
+        record, source.checked_items, source.findings, source.confirmed_resolutions
+    )
+    return source if expected_key == source.ai_cache_key else None
 
 
 @require_POST
@@ -42,6 +115,8 @@ def verify(request):
         return _failure("JSON invalide.", 400)
     if not isinstance(payload, dict):
         return _failure("Objet JSON requis.", 400)
+    if "ai" in payload and type(payload["ai"]) is not bool:
+        return _failure("Le champ ai doit être un booléen.", 400)
 
     record_id = payload.get("record_id")
     if type(record_id) is not int:
@@ -76,13 +151,38 @@ def verify(request):
             "duration": str(item.get("duration", "")).strip()[:60],
         })
 
-    findings = engine.check(record, checked_items)
+    try:
+        confirmed_resolutions = validate_confirmed_resolutions(
+            record, request.user, payload.get("confirmed_resolutions", []), checked_items
+        )
+    except ValueError as exc:
+        return _failure(str(exc), 400)
+    findings = engine.check(record, checked_items, confirmed_resolutions)
+    cache_key = ai_agent.cache_key_for(record, checked_items, findings, confirmed_resolutions)
+    if payload.get("ai") and settings.PHARMACHECK_AI_ENABLED:
+        cached = PrescriptionCheck.objects.filter(
+            record=record,
+            doctor=request.user,
+            ai_cache_key=cache_key,
+            ai_status__in=[PrescriptionCheck.AIStatus.RUNNING, PrescriptionCheck.AIStatus.DONE],
+        ).order_by("-created_at").first()
+        if cached is not None:
+            ai_agent.mark_stale(cached)
+            cached.refresh_from_db()
+            if cached.ai_status != PrescriptionCheck.AIStatus.ERROR:
+                access.log(
+                    request, record, AccessLog.Action.PRESCRIPTION_CHECK,
+                    f"Vérification Pharma-Check en cache {cached.pk}",
+                )
+                return _response(cached)
     safety_check = PrescriptionCheck.objects.create(
         record=record,
         doctor=request.user,
         findings=findings,
         checked_items=checked_items,
+        confirmed_resolutions=confirmed_resolutions,
         max_severity=engine.max_severity(findings),
+        ai_cache_key=cache_key if payload.get("ai") else "",
     )
     access.log(
         request, record, AccessLog.Action.PRESCRIPTION_CHECK,

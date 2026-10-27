@@ -50,7 +50,11 @@ def _split_treatments(text):
 def _group_values(drug):
     if not drug:
         return set()
-    values = {normalize_text(drug.get("dci")), normalize_text(drug.get("drug_class"))}
+    values = {
+        normalize_text(drug.get("name")),
+        normalize_text(drug.get("dci")),
+        normalize_text(drug.get("drug_class")),
+    }
     values.discard("")
     return values
 
@@ -110,12 +114,10 @@ def _daily_dose(item, resolved):
         units = re.search(r"\b(\d+(?:[.,]\d+)?)\s*[x×*]\s*\d+(?:[.,]\d+)?\s*(?:mg|g)\b", dosage, re.IGNORECASE)
         if units:
             per_administration *= Decimal(units.group(1).replace(",", "."))
-    if per_administration is None:
+    if per_administration is None and count:
         strength = _mg_amount(resolved.get("strength"))
         if strength:
-            per_administration = (
-                Decimal(count.group(1).replace(",", ".")) * strength if count else strength
-            )
+            per_administration = Decimal(count.group(1).replace(",", ".")) * strength
     administrations = _frequency_per_day(frequency) or _frequency_per_day(dosage)
     if per_administration is None or administrations is None:
         return None
@@ -151,17 +153,30 @@ def _context_text(record):
     )))
 
 
-def check(record, items):
+def check(record, items, confirmed_resolutions=()):
     """Return rules findings for unsaved prescription items and the patient's current therapy."""
     catalog = list(Drug.objects.filter(is_active=True))
     resolved_items = []
     findings = []
+    confirmed = {
+        normalize_text(item["typed"]): {
+            "name": item["dci"],
+            "dci": item["dci"],
+            "drug_class": item["drug_class"],
+            "strength": "",
+            "matched": True,
+            "source": "doctor_confirmed",
+        }
+        for item in confirmed_resolutions
+    }
 
     for item in items:
         name = str(_value(item, "drug_name")).strip()
         if not name:
             continue
-        drug = resolve_drug(name, _value(item, "drug"), catalog)
+        drug = confirmed.get(normalize_text(name)) or resolve_drug(
+            name, _value(item, "drug"), catalog
+        )
         resolved_items.append({"item": item, "name": name, "drug": drug})
         if drug is None:
             findings.append(_finding(

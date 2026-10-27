@@ -19,6 +19,8 @@
       {% csrf_token %}
       {% include "core/partials/form_errors.html" %}
       {{ formset.management_form }}
+      <input type="hidden" name="pharmacheck_confirmed_resolutions" value="[]">
+      <input type="hidden" name="pharmacheck_ai_check_id" value="">
 
       <section class="card" style="margin-bottom:1.25rem">
         <div class="card-header"><h3><i class="bi bi-capsule"></i> Médicaments</h3><span class="small text-muted">10 au maximum</span></div>
@@ -77,23 +79,31 @@
   <div class="col-4">
     <section class="card pc-panel" aria-labelledby="pharmacheck-title">
       <div class="card-header">
-        <h3 id="pharmacheck-title"><i class="bi bi-shield-check"></i> Pharma-Check</h3>
-        <span class="small text-muted">Règles de soutien, à vérifier</span>
+        <h3 id="pharmacheck-title"><i class="bi bi-shield-check"></i> Vérification par règles</h3>
+        <span class="small text-muted">Résultat instantané</span>
       </div>
       <div class="card-body">
-        <p class="small text-muted">Aide à la décision uniquement : le médecin reste responsable de sa prescription.</p>
         <div data-pharmacheck-results aria-live="polite" aria-atomic="false">
           <p class="small text-muted">Saisissez un médicament pour lancer les vérifications.</p>
         </div>
-        {% if pharmacheck_ai_enabled %}
-        <button type="button" class="btn btn-light" data-pharmacheck-ai disabled>
-          <i class="bi bi-stars"></i> Avis IA (seconde lecture)
-        </button>
-        <p class="small text-muted" data-pharmacheck-ai-status></p>
-        {% else %}
-        <p class="small text-muted">Avis IA indisponible ; les règles locales restent actives.</p>
-        {% endif %}
       </div>
+    </section>
+
+    <section class="card pc-ai-panel" aria-labelledby="pharmacien-ia-title">
+      <div class="card-header">
+        <h3 id="pharmacien-ia-title"><i class="bi bi-robot"></i> Pharmacien IA</h3>
+        <span class="badge pc-ai-badge">IA</span>
+      </div>
+      <div class="card-body" data-pharmacheck-ai aria-live="polite" aria-atomic="false">
+        {% if pharmacheck_ai_enabled %}
+        <p data-ai-status>Avis IA en attente de votre saisie.</p>
+        {% else %}
+        <p data-ai-status>Avis IA indisponible, contrôle par règles actif.</p>
+        {% endif %}
+        <span class="pc-spinner" data-ai-spinner hidden aria-hidden="true"></span>
+        <div data-pharmacheck-ai-results></div>
+      </div>
+      <div class="card-footer small text-muted">Seconde lecture facultative ; ne remplace pas le jugement clinique.</div>
     </section>
 
     <section class="card">
@@ -113,13 +123,19 @@
 (() => {
   const form = document.querySelector("[data-pharmacheck]");
   if (!form) return;
-  const results = form.parentElement.parentElement.querySelector("[data-pharmacheck-results]");
-  const aiButton = form.parentElement.parentElement.querySelector("[data-pharmacheck-ai]");
-  const aiStatus = form.parentElement.parentElement.querySelector("[data-pharmacheck-ai-status]");
+  const rulesResults = document.querySelector("[data-pharmacheck-results]");
+  const aiCard = document.querySelector("[data-pharmacheck-ai]");
+  const aiResults = document.querySelector("[data-pharmacheck-ai-results]");
+  const aiStatus = document.querySelector("[data-ai-status]");
+  const aiSpinner = document.querySelector("[data-ai-spinner]");
   const overrideReason = form.querySelector("[name='override_reason']");
+  const confirmedInput = form.querySelector("[name='pharmacheck_confirmed_resolutions']");
+  const sourceInput = form.querySelector("[name='pharmacheck_ai_check_id']");
   const csrf = form.querySelector("[name='csrfmiddlewaretoken']").value;
-  let latestCheckId = null;
-  let timer = null;
+  const confirmed = new Map();
+  const rejected = new Set();
+  let ruleTimer = null;
+  let aiTimer = null;
   let requestNumber = 0;
 
   const collectItems = () => Array.from(form.querySelectorAll("[data-formset-rows] input[name$='-drug_name']"))
@@ -133,6 +149,10 @@
       };
     }).filter(item => item.drug_name);
 
+  const syncConfirmed = () => {
+    confirmedInput.value = JSON.stringify(Array.from(confirmed.values()));
+  };
+
   const appendText = (parent, tag, text, className) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -141,38 +161,116 @@
     return node;
   };
 
-  const render = data => {
-    results.replaceChildren();
-    overrideReason.required = ["major", "contraindicated"].includes(data.max_severity);
+  const renderRules = data => {
+    rulesResults.replaceChildren();
+    const level = data.rules_severity || data.max_severity;
+    overrideReason.required = ["major", "contraindicated"].includes(level);
     overrideReason.setAttribute("aria-required", String(overrideReason.required));
     if (!data.findings.length) {
-      appendText(results, "p", "Aucune alerte des règles configurées pour les lignes reconnues. Cela ne garantit pas l'absence de risque.", "pc-empty");
+      appendText(rulesResults, "p", "Aucune alerte des règles configurées pour les lignes reconnues. Cela ne garantit pas l'absence de risque.", "pc-empty");
     }
     data.findings.forEach(finding => {
       const card = document.createElement("article");
       card.className = "pc-finding pc-finding--" + (["major", "contraindicated"].includes(finding.severity) ? "danger" : finding.severity === "moderate" ? "moderate" : "info");
       appendText(card, "strong", finding.severity_label + " · " + finding.kind.replaceAll("_", " "));
       appendText(card, "p", finding.message);
-      results.appendChild(card);
+      rulesResults.appendChild(card);
     });
-    if (data.ai_opinion && data.ai_status === "done") {
-      const opinion = document.createElement("section");
-      opinion.className = "pc-ai-opinion";
-      appendText(opinion, "strong", "Avis IA — niveau final : " + data.final_level);
-      appendText(opinion, "p", data.ai_opinion.comment || "");
-      (data.ai_opinion.additional_concerns || []).forEach(text => appendText(opinion, "p", text));
-      (data.ai_opinion.alternatives || []).forEach(text => appendText(opinion, "p", text));
-      results.appendChild(opinion);
+  };
+
+  const addAiBadge = (parent, label) => appendText(parent, "span", label, "pc-ai-badge");
+  const renderAI = data => {
+    aiResults.replaceChildren();
+    if (data.ai_status === "running") {
+      aiStatus.textContent = "L'IA analyse l'ordonnance…";
+      aiSpinner.hidden = false;
+      return;
     }
-    if (data.ai_status === "error" && data.ai_error) appendText(results, "p", data.ai_error, "pc-ai-error");
-    if (aiButton) aiButton.disabled = !data.check_id || data.ai_status === "running" || !form.dataset.aiEnabled || form.dataset.aiEnabled !== "true";
-    latestCheckId = data.check_id;
+    aiSpinner.hidden = true;
+    if (data.ai_status !== "done" || !data.ai_opinion) {
+      aiStatus.textContent = "Avis IA indisponible, contrôle par règles actif.";
+      sourceInput.value = "";
+      return;
+    }
+    aiStatus.textContent = "Niveau global : " + data.final_level + " · niveau final jamais inférieur aux règles.";
+    sourceInput.value = data.check_id || "";
+    const comment = document.createElement("article");
+    comment.className = "pc-ai-opinion";
+    addAiBadge(comment, "IA");
+    appendText(comment, "p", data.ai_opinion.pharmacist_comment || "");
+    appendText(comment, "p", "D'après : contexte clinique et ordonnance en cours.", "pc-reliance");
+    aiResults.appendChild(comment);
+
+    (data.ai_opinion.resolved_drugs || []).forEach(suggestion => {
+      const card = document.createElement("article");
+      card.className = "pc-ai-suggestion";
+      addAiBadge(card, "IA");
+      appendText(card, "strong", "Reconnu par l'IA : " + suggestion.dci + " (" + suggestion.drug_class + "), confiance " + Math.round(suggestion.confidence * 100) + " %");
+      appendText(card, "p", suggestion.note);
+      appendText(card, "p", "D'après : " + (suggestion.based_on || []).join(", "), "pc-reliance");
+      if (confirmed.has(suggestion.typed)) {
+        appendText(card, "p", "Correspondance confirmée par le médecin.", "pc-confirmed");
+      } else if (rejected.has(suggestion.typed)) {
+        appendText(card, "p", "Correspondance rejetée par le médecin.", "pc-rejected");
+      } else {
+        const accept = document.createElement("button");
+        accept.type = "button";
+        accept.className = "btn btn-light";
+        accept.textContent = "Confirmer";
+        accept.addEventListener("click", () => {
+          confirmed.set(suggestion.typed, {
+            typed: suggestion.typed, dci: suggestion.dci, drug_class: suggestion.drug_class,
+            source_check_id: data.check_id
+          });
+          rejected.delete(suggestion.typed);
+          syncConfirmed();
+          form.dispatchEvent(new Event("input", {bubbles: true}));
+        });
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.className = "btn btn-ghost";
+        reject.textContent = "Rejeter";
+        reject.addEventListener("click", () => {
+          confirmed.delete(suggestion.typed);
+          rejected.add(suggestion.typed);
+          syncConfirmed();
+          renderAI(data);
+          form.dispatchEvent(new Event("input", {bubbles: true}));
+        });
+        card.append(accept, reject);
+      }
+      aiResults.appendChild(card);
+    });
+
+    (data.ai_opinion.extra_findings || []).forEach(finding => {
+      const card = document.createElement("article");
+      const severity = finding.severity === "major" || finding.severity === "contraindicated"
+        ? "danger" : finding.severity === "moderate" ? "moderate" : "info";
+      card.className = "pc-finding pc-finding--" + severity;
+      addAiBadge(card, finding.kind === "interaction" ? "IA, non confirmé par les règles" : "IA");
+      appendText(card, "strong", finding.title + " · " + finding.severity);
+      appendText(card, "p", finding.detail);
+      appendText(card, "p", "D'après : " + (finding.based_on || []).join(", "), "pc-reliance");
+      aiResults.appendChild(card);
+    });
+    (data.ai_opinion.alternatives || []).forEach(alternative => {
+      const card = document.createElement("article");
+      card.className = "pc-ai-suggestion";
+      addAiBadge(card, "IA");
+      appendText(card, "strong", "À discuter pour : " + alternative.instead_of);
+      appendText(card, "p", alternative.suggestion + " — " + alternative.why);
+      appendText(card, "p", "D'après : " + (alternative.based_on || []).join(", "), "pc-reliance");
+      aiResults.appendChild(card);
+    });
   };
 
   const send = async (ai = false, checkId = null, number = requestNumber) => {
     const body = checkId
       ? {record_id: Number(form.dataset.recordId), check_id: checkId}
-      : {record_id: Number(form.dataset.recordId), items: collectItems(), ai};
+      : {
+          record_id: Number(form.dataset.recordId), items: collectItems(), ai,
+          confirmed_resolutions: Array.from(confirmed.values())
+        };
     const response = await fetch(form.dataset.checkUrl, {
       method: "POST",
       credentials: "same-origin",
@@ -181,45 +279,76 @@
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "La vérification n'a pas abouti.");
-    if (number === requestNumber) render(data);
+    if (number === requestNumber) {
+      renderRules(data);
+      if (ai || checkId) renderAI(data);
+    }
     return data;
   };
 
-  form.addEventListener("input", () => {
-    window.clearTimeout(timer);
-    timer = window.setTimeout(async () => {
-      requestNumber += 1;
-      try {
-        await send(false, null, requestNumber);
-      } catch (error) {
-        results.replaceChildren();
-        appendText(results, "p", error.message, "pc-ai-error");
-      }
-    }, 400);
-  });
-
-  if (aiButton) aiButton.addEventListener("click", async () => {
-    aiButton.disabled = true;
-    aiStatus.textContent = "Avis IA en cours…";
-    requestNumber += 1;
-    const number = requestNumber;
+  const requestAI = async number => {
+    if (number !== requestNumber || !collectItems().length || form.dataset.aiEnabled !== "true") return;
+    aiStatus.textContent = "L'IA analyse l'ordonnance…";
+    aiSpinner.hidden = false;
     try {
       let data = await send(true, null, number);
       const deadline = Date.now() + 5 * 60 * 1000;
-      while (data.ai_status === "running" && Date.now() < deadline) {
+      while (data.ai_status === "running" && Date.now() < deadline && number === requestNumber) {
         await new Promise(resolve => window.setTimeout(resolve, 1200));
         data = await send(false, data.check_id, number);
       }
-      if (data.ai_status === "done") aiStatus.textContent = "Seconde lecture terminée. Le niveau final ne peut pas être inférieur aux alertes des règles.";
-      else if (data.ai_status === "error") aiStatus.textContent = data.ai_error || "Avis IA indisponible ; les résultats des règles restent affichés.";
-      else aiStatus.textContent = "Délai d'attente dépassé ; les résultats des règles restent affichés.";
+      if (number === requestNumber && data.ai_status !== "done") {
+        aiSpinner.hidden = true;
+        aiStatus.textContent = "Avis IA indisponible, contrôle par règles actif.";
+      }
     } catch (error) {
-      aiStatus.textContent = error.message;
-    } finally {
-      aiButton.disabled = !latestCheckId;
+      if (number === requestNumber) {
+        aiSpinner.hidden = true;
+        aiStatus.textContent = "Avis IA indisponible, contrôle par règles actif.";
+        appendText(aiResults, "p", error.message, "pc-ai-error");
+      }
     }
+  };
+
+  form.addEventListener("input", () => {
+    const items = collectItems();
+    const names = new Set(items.map(item => item.drug_name));
+    for (const typed of confirmed.keys()) if (!names.has(typed)) confirmed.delete(typed);
+    for (const typed of rejected) if (!names.has(typed)) rejected.delete(typed);
+    syncConfirmed();
+    sourceInput.value = "";
+    requestNumber += 1;
+    const number = requestNumber;
+    window.clearTimeout(ruleTimer);
+    window.clearTimeout(aiTimer);
+    if (!items.length) {
+      rulesResults.replaceChildren();
+      appendText(rulesResults, "p", "Saisissez un médicament pour lancer les vérifications.", "small text-muted");
+      aiSpinner.hidden = true;
+      aiStatus.textContent = form.dataset.aiEnabled === "true"
+        ? "Avis IA en attente de votre saisie."
+        : "Avis IA indisponible, contrôle par règles actif.";
+      aiResults.replaceChildren();
+      return;
+    }
+    aiStatus.textContent = form.dataset.aiEnabled === "true"
+      ? "Analyse programmée après votre saisie…"
+      : "Avis IA indisponible, contrôle par règles actif.";
+    aiResults.replaceChildren();
+    ruleTimer = window.setTimeout(async () => {
+      try {
+        await send(false, null, number);
+      } catch (error) {
+        if (number === requestNumber) {
+          rulesResults.replaceChildren();
+          appendText(rulesResults, "p", error.message, "pc-ai-error");
+        }
+      }
+    }, 400);
+    aiTimer = window.setTimeout(() => requestAI(number), 1500);
   });
 
+  form.addEventListener("submit", syncConfirmed);
   if (collectItems().length) form.dispatchEvent(new Event("input", {bubbles: true}));
 })();
 </script>
