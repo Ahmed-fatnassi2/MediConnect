@@ -12,6 +12,7 @@
 <div class="sidebar-section">Ma santé</div>
 <a href="{% url 'records:my_record' %}" class="sidebar-link{% if active_nav == 'records' %} active{% endif %}"><i class="bi bi-folder2-open"></i> Dossier médical</a>
 <a href="{% url 'records:prescriptions' %}" class="sidebar-link{% if active_nav == 'prescriptions' %} active{% endif %}"><i class="bi bi-capsule"></i> Ordonnances</a>
+<a href="{% url 'followups:patient_plans' %}" class="sidebar-link{% if active_nav == 'followups' %} active{% endif %}"><i class="bi bi-list-check"></i> Plans de suivi</a>
 <div class="sidebar-section">Compte</div>
 <a href="{% url 'teleconsult:notifications' %}" class="sidebar-link{% if active_nav == 'notifications' %} active{% endif %}"><i class="bi bi-bell"></i> Notifications{% if unread_notifications %} <span class="count">{{ unread_notifications }}</span>{% endif %}</a>
 <a href="{% url 'account_profile' %}" class="sidebar-link{% if active_nav == 'profile' %} active{% endif %}"><i class="bi bi-person"></i> Mon profil</a>

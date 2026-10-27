@@ -49,6 +49,9 @@ INSTALLED_APPS = [
     'appointments',
     'teleconsult',
     'records',
+    'followups',
+    'pharmacheck',
+    'handsfree',
     'verification',
 ]
 
@@ -129,7 +132,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
-ASSET_VERSION = "2026-10-26.4"  # change it after editing CSS/JS (cache busting)
+ASSET_VERSION = "2026-10-27.3"
+HANDSFREE_ENABLED = os.getenv("HANDSFREE_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 # Uploaded files (doctor credentials). Never served publicly:
 # staff download them through a protected back-office view.
@@ -186,6 +192,24 @@ DOCUMENT_AI_ENABLED = (
 DOCUMENT_AI_MODEL = os.getenv("DOCUMENT_AI_MODEL", "gpt-4.1")
 DOCUMENT_AI_TIMEOUT = int(os.getenv("DOCUMENT_AI_TIMEOUT", "90"))
 DOCUMENT_AI_ASYNC = "test" not in sys.argv
+
+# Pharma-Check's optional second opinion. Deterministic rules always run without AI.
+PHARMACHECK_AI_ENABLED = (
+    os.getenv("PHARMACHECK_AI_ENABLED", "true").lower() == "true"
+    and bool(OPENAI_API_KEY)
+    and "test" not in sys.argv
+)
+PHARMACHECK_AI_MODEL = os.getenv("PHARMACHECK_AI_MODEL", "gpt-4.1-mini")
+PHARMACHECK_AI_TIMEOUT = int(os.getenv("PHARMACHECK_AI_TIMEOUT", "30"))
+PHARMACHECK_AI_ASYNC = "test" not in sys.argv
+
+# Follow-up plan task suggestions (doctor-reviewed drafts only).
+FOLLOWUP_AI_ENABLED = (
+    os.getenv("FOLLOWUP_AI_ENABLED", "true").lower() == "true"
+    and bool(OPENAI_API_KEY)
+    and "test" not in sys.argv
+)
+FOLLOWUP_AI_TIMEOUT = int(os.getenv("FOLLOWUP_AI_TIMEOUT", "30"))
 
 LOGGING = {
     "version": 1,
