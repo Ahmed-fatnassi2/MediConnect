@@ -7,7 +7,6 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from appointments.models import Appointment, Availability, Specialty
-from followups.models import FollowUpPlan, FollowUpTask
 from records.models import (
     AccessLog,
     ConsultationNote,
@@ -78,7 +77,6 @@ class Command(BaseCommand):
 
         self._seed_appointments(patient)
         self._seed_record(patient)
-        self._seed_followup(patient)
 
         self.stdout.write(self.style.SUCCESS(
             f"Comptes de démonstration prêts (mot de passe : {PASSWORD})\n"
@@ -132,44 +130,6 @@ class Command(BaseCommand):
     def _ensure_rooms(self):
         for appointment in Appointment.objects.filter(status=Appointment.Status.CONFIRMED):
             room_for(appointment)
-
-    def _seed_followup(self, patient):
-        """An idempotent doctor/patient follow-up demo tied to the finished consultation."""
-        appointment = Appointment.objects.filter(
-            patient=patient, status=Appointment.Status.COMPLETED,
-        ).order_by("-start").first()
-        if not appointment:
-            return
-
-        plan, _ = FollowUpPlan.objects.get_or_create(
-            appointment=appointment,
-            defaults={
-                "title": "Suivi après la téléconsultation",
-                "instructions": (
-                    "Suivez les consignes validées dans votre ordonnance. "
-                    "Contactez votre médecin si vos symptômes s'aggravent ou si vous avez une question."
-                ),
-            },
-        )
-        today = timezone.localdate()
-        tasks = [
-            ("Noter l'évolution des symptômes", "Indiquez si la douleur et la fièvre s'améliorent.", 2,
-             FollowUpTask.Status.IN_PROGRESS),
-            ("Suivre les consignes de l'ordonnance", "Vérifiez les instructions approuvées par votre médecin.", 1,
-             FollowUpTask.Status.TODO),
-            ("Prévoir un rendez-vous de contrôle", "Recontactez le cabinet si les symptômes ne s'améliorent pas.", 0,
-             FollowUpTask.Status.DONE),
-        ]
-        for title, details, days, status in tasks:
-            FollowUpTask.objects.get_or_create(
-                plan=plan,
-                title=title,
-                defaults={
-                    "details": details,
-                    "due_date": today + timedelta(days=days),
-                    "status": status,
-                },
-            )
 
     def _seed_past_consultation(self, patient):
         """A finished teleconsultation with chat history and a report."""

@@ -1,7 +1,5 @@
 import mimetypes
-import json
 
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
@@ -10,16 +8,11 @@ from django.db.models import Count, Max, Q
 from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from appointments.views import verified_doctor_required
-from appointments.models import Appointment
 from core.models import get_role
 from core.views import role_required
-from pharmacheck import ai_agent as pharmacheck_ai
-from pharmacheck import engine as pharmacheck_engine
-from pharmacheck.views import valid_ai_source_check, validate_confirmed_resolutions
 from teleconsult.models import ConsultationSummary, Notification
 from teleconsult.services import notify
 from triage.models import TriageSession
@@ -35,10 +28,7 @@ from .forms import (
     allergy_conflicts,
 )
 from .ai_analysis import start_analysis
-from .models import (
-    AccessLog, DocumentAnalysis, Drug, MedicalDocument, MedicalRecord, Prescription, PrescriptionCheck,
-    PatientInstructions,
-)
+from .models import AccessLog, DocumentAnalysis, Drug, MedicalDocument, MedicalRecord, Prescription
 
 User = get_user_model()
 Action = AccessLog.Action
@@ -105,11 +95,6 @@ def _record_page(request, record, role):
         "notes": notes,
         "prescriptions": prescriptions,
         "documents": documents,
-        "followup_appointment": Appointment.objects.filter(
-            doctor=request.user, patient=patient,
-            status__in=[Appointment.Status.CONFIRMED, Appointment.Status.COMPLETED],
-            follow_up_plan__isnull=True,
-        ).order_by("-start").first() if role == "doctor" else None,
         "consultations": ConsultationSummary.objects.filter(room__appointment__patient=patient)
         .select_related("room__appointment__doctor", "room__appointment__specialty"),
     }
@@ -263,79 +248,10 @@ def new_prescription(request, patient_id):
                             initial={"appointment": request.GET.get("rdv")})
     formset = PrescriptionItemFormSet(post, instance=Prescription(), prefix="items")
     conflicts = []
-    override_reason_error = ""
     if post is not None and form.is_valid() and formset.is_valid():
-        draft_items = [
-            item_form.save(commit=False)
-            for item_form in formset.forms
-            if item_form.cleaned_data.get("drug_name")
-        ]
-        names = [item.drug_name for item in draft_items]
+        names = [f.cleaned_data["drug_name"] for f in formset.forms if f.cleaned_data.get("drug_name")]
         conflicts = allergy_conflicts(record, names)
-        confirmation_error = False
-        try:
-            submitted_resolutions = json.loads(post.get("pharmacheck_confirmed_resolutions", "[]"))
-            confirmed_resolutions = validate_confirmed_resolutions(
-                record, request.user, submitted_resolutions,
-                [
-                    {
-                        "drug_name": item.drug_name,
-                        "dosage": item.dosage,
-                        "frequency": item.frequency,
-                        "duration": item.duration,
-                    }
-                    for item in draft_items
-                ],
-            )
-        except ValueError as exc:
-            confirmation_error = True
-            confirmed_resolutions = []
-            form.add_error(None, str(exc))
-        checked_items = [
-            {
-                "drug_name": item.drug_name,
-                "dosage": item.dosage,
-                "frequency": item.frequency,
-                "duration": item.duration,
-            }
-            for item in draft_items
-        ]
-        findings = pharmacheck_engine.check(record, draft_items, confirmed_resolutions)
-        override_reason = post.get("override_reason", "").strip()
-        ai_source = valid_ai_source_check(
-            record, request.user, post.get("pharmacheck_ai_check_id"), checked_items
-        )
-        ai_opinion = json.loads(json.dumps(ai_source.ai_opinion)) if ai_source else {}
-        rule_level = pharmacheck_engine.max_severity(findings)
-        final_level = max(
-            [rule_level, ai_opinion.get("final_level", "info")],
-            key=pharmacheck_engine.SEVERITY_ORDER.index,
-        )
-        safety_check = PrescriptionCheck.objects.create(
-            record=record,
-            doctor=request.user,
-            findings=findings,
-            checked_items=checked_items,
-            confirmed_resolutions=confirmed_resolutions,
-            max_severity=final_level,
-            override_reason=override_reason,
-            ai_opinion=ai_opinion,
-            ai_status=(
-                PrescriptionCheck.AIStatus.DONE if ai_source
-                else PrescriptionCheck.AIStatus.IDLE
-            ),
-            ai_model=ai_source.ai_model if ai_source else "",
-            ai_cache_key=ai_source.ai_cache_key if ai_source else "",
-        )
-        access.log(
-            request, record, Action.PRESCRIPTION_CHECK, f"Vérification Pharma-Check {safety_check.pk}"
-        )
-        if confirmation_error:
-            pass
-        elif pharmacheck_engine.requires_override(findings) and len(override_reason) < 10:
-            override_reason_error = "Pour enregistrer malgré une alerte majeure ou contre-indiquée, indiquez un motif d'au moins 10 caractères."
-            form.add_error(None, override_reason_error)
-        else:
+        if not conflicts or post.get("confirm_allergy"):
             with transaction.atomic():
                 prescription = form.save(commit=False)
                 prescription.record = record
@@ -343,10 +259,7 @@ def new_prescription(request, patient_id):
                 prescription.save()
                 formset.instance = prescription
                 formset.save()
-                safety_check.prescription = prescription
-                safety_check.save(update_fields=["prescription"])
             access.log(request, record, Action.PRESCRIPTION, prescription.code)
-            pharmacheck_ai.start_patient_instructions(prescription)
             notify(
                 record.patient, Notification.Kind.PRESCRIPTION, "Nouvelle ordonnance",
                 f"Dr {request.user.get_full_name()} vous a prescrit : {prescription.title}.",
@@ -357,8 +270,6 @@ def new_prescription(request, patient_id):
     context = {
         **_layout(request, "doctor", "patients"),
         "form": form, "formset": formset, "record": record, "conflicts": conflicts,
-        "override_reason_error": override_reason_error,
-        "pharmacheck_ai_enabled": settings.PHARMACHECK_AI_ENABLED,
         "back": _record_url(record, "doctor", "ordonnances"),
         "suggestions": Drug.objects.filter(is_active=True),
         "datalist_id": DRUG_DATALIST_ID,
@@ -404,23 +315,6 @@ def prescription_detail(request, code):
     if request.user != prescription.doctor:
         access.log(request, record, Action.PRESCRIPTION_VIEW, prescription.code)
     patient = record.patient
-    pharmacheck_check = None
-    patient_instructions = None
-    if role == "doctor" and request.user == prescription.doctor:
-        pharmacheck_check = prescription.safety_checks.filter(doctor=request.user).first()
-        patient_instructions = PatientInstructions.objects.filter(prescription=prescription).first()
-        if patient_instructions:
-            pharmacheck_ai.mark_instructions_stale(patient_instructions)
-            patient_instructions.refresh_from_db()
-    elif role == "patient":
-        patient_instructions = PatientInstructions.objects.filter(
-            prescription=prescription, status=PatientInstructions.Status.APPROVED
-        ).first()
-        if patient_instructions:
-            access.log(
-                request, record, Action.RX_INSTRUCTIONS,
-                f"Consignes validées pour {prescription.code}",
-            )
     context = {
         **_layout(request, role, "prescriptions"),
         "prescription": prescription,
@@ -429,48 +323,8 @@ def prescription_detail(request, code):
         "patient_age": TriageSession.age_from_birth_date(patient.patient_profile.date_of_birth),
         "record": record,
         "back": reverse("records:prescriptions") if role == "patient" else _record_url(record, role, "ordonnances"),
-        "pharmacheck_check": pharmacheck_check,
-        "patient_instructions": patient_instructions,
     }
     return render(request, "records/prescription_detail.html", context)
-
-
-@verified_doctor_required
-@require_POST
-def update_patient_instructions(request, code):
-    prescription = get_object_or_404(Prescription, code=code, doctor=request.user)
-    instructions = get_object_or_404(PatientInstructions, prescription=prescription)
-    if instructions.generation_status != PatientInstructions.GenerationStatus.DONE:
-        messages.error(request, "Les consignes IA ne sont pas prêtes ; elles ne peuvent pas être publiées.")
-        return redirect("records:prescription", code=prescription.code)
-    text_fr = request.POST.get("text_fr", "").strip()
-    text_ar = request.POST.get("text_ar", "").strip()
-    if len(text_fr) > 10000 or len(text_ar) > 10000:
-        messages.error(request, "Les consignes sont trop longues.")
-        return redirect("records:prescription", code=prescription.code)
-    instructions.text_fr = text_fr
-    instructions.text_ar = text_ar
-    action = request.POST.get("instruction_action")
-    if action == "approve":
-        if not text_fr or not text_ar:
-            messages.error(request, "Les consignes doivent être complètes en français et en arabe avant validation.")
-            return redirect("records:prescription", code=prescription.code)
-        instructions.status = PatientInstructions.Status.APPROVED
-        instructions.approved_by = request.user
-        instructions.approved_at = timezone.now()
-        message = "Consignes bilingues approuvées et visibles par le patient."
-    elif action == "save":
-        instructions.status = PatientInstructions.Status.DRAFT
-        instructions.approved_by = None
-        instructions.approved_at = None
-        message = "Brouillon des consignes enregistré ; le patient ne le voit pas."
-    else:
-        messages.error(request, "Action de validation inconnue.")
-        return redirect("records:prescription", code=prescription.code)
-    instructions.save()
-    access.log(request, prescription.record, Action.RX_INSTRUCTIONS, message)
-    messages.success(request, message)
-    return redirect("records:prescription", code=prescription.code)
 
 
 @login_required

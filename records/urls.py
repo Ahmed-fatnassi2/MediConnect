@@ -21,7 +21,6 @@ urlpatterns = [
     # Shared
     path("ordonnances/", views.prescription_list, name="prescriptions"),
     path("ordonnances/<str:code>/", views.prescription_detail, name="prescription"),
-    path("ordonnances/<str:code>/consignes/", views.update_patient_instructions, name="patient_instructions"),
     path("documents/<int:pk>/", views.document_file, name="document"),
     path("documents/<int:pk>/supprimer/", views.document_delete, name="document_delete"),
     path("documents/<int:pk>/analyse-ia/", views.document_analysis, name="document_analysis"),

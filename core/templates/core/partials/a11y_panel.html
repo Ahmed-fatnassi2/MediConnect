@@ -55,9 +55,6 @@
       </dl>
       {% endif %}
     </fieldset>
-    {% if handsfree_enabled %}
-    {% include "handsfree/_panel.html" %}
-    {% endif %}
   </div>
 
   <div class="ai-dialog-foot">
@@ -65,6 +62,3 @@
     <button type="button" class="btn btn-primary btn-sm" data-a11y-close>Terminé</button>
   </div>
 </dialog>
-{% if handsfree_enabled %}
-{% include "handsfree/_panel.html" with dialogs_only=True %}
-{% endif %}

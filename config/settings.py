@@ -22,47 +22,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Secrets (OpenAI key…) live in a local .env file, never in the code.
 load_dotenv(BASE_DIR / ".env")
 
-def env_bool(name, default=False):
-    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
-
-ON_VERCEL = bool(
-    os.getenv("VERCEL")
-    or os.getenv("VERCEL_URL")
-    or os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
-)
-ON_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))
-ON_HOSTED_PLATFORM = ON_VERCEL or ON_RAILWAY
-
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "")
-if ON_HOSTED_PLATFORM and not SECRET_KEY:
-    raise RuntimeError("DJANGO_SECRET_KEY must be configured for hosted deployments")
-if not SECRET_KEY:
-    SECRET_KEY = 'django-insecure-76y0i_b2c&-)yi3r3f-u(l%boff9zy1ui^bqhqgw=_5axrsk98'
+SECRET_KEY = 'django-insecure-76y0i_b2c&-)yi3r3f-u(l%boff9zy1ui^bqhqgw=_5axrsk98'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False if ON_HOSTED_PLATFORM else env_bool("DJANGO_DEBUG", True)
+DEBUG = True
 
-ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()]
-if ON_VERCEL:
-    ALLOWED_HOSTS.extend(host for host in (os.getenv("VERCEL_URL"), os.getenv("VERCEL_PROJECT_PRODUCTION_URL")) if host)
-    ALLOWED_HOSTS = list(dict.fromkeys([".vercel.app", "mediconnect-tawny.vercel.app", *ALLOWED_HOSTS]))
-if ON_RAILWAY:
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-    if railway_domain:
-        ALLOWED_HOSTS.append(railway_domain)
-CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]
-if ON_VERCEL:
-    CSRF_TRUSTED_ORIGINS.append("https://*.vercel.app")
-if ON_RAILWAY and os.getenv("RAILWAY_PUBLIC_DOMAIN"):
-    CSRF_TRUSTED_ORIGINS.append(f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}")
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-SESSION_COOKIE_SECURE = ON_HOSTED_PLATFORM
-CSRF_COOKIE_SECURE = ON_HOSTED_PLATFORM
+ALLOWED_HOSTS = []
 
 
 # Application definition
@@ -79,15 +49,11 @@ INSTALLED_APPS = [
     'appointments',
     'teleconsult',
     'records',
-    'followups',
-    'pharmacheck',
-    'handsfree',
     'verification',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -126,11 +92,6 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-if os.getenv("DATABASE_URL"):
-    import dj_database_url
-    DATABASES["default"] = dj_database_url.parse(os.environ["DATABASE_URL"], conn_max_age=0, ssl_require=ON_VERCEL)
-elif ON_HOSTED_PLATFORM:
-    raise RuntimeError("DATABASE_URL must point to a persistent PostgreSQL database")
 
 
 # Password validation
@@ -168,30 +129,11 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
-STORAGES = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
-}
-ASSET_VERSION = "2026-10-27.5"
-HANDSFREE_ENABLED = os.getenv("HANDSFREE_ENABLED", "true").strip().lower() in {
-    "1", "true", "yes", "on",
-}
+ASSET_VERSION = "2026-10-26.4"  # change it after editing CSS/JS (cache busting)
 
 # Uploaded files (doctor credentials). Never served publicly:
 # staff download them through a protected back-office view.
-MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", os.getenv("RAILWAY_VOLUME_MOUNT_PATH", str(BASE_DIR / 'media'))))
-if ON_VERCEL:
-    if not os.getenv("AWS_STORAGE_BUCKET_NAME"):
-        raise RuntimeError("Configure a private S3-compatible bucket before deploying uploads to Vercel")
-    INSTALLED_APPS.append("storages")
-    STORAGES = {
-        "default": {"BACKEND": "storages.backends.s3.S3Storage", "OPTIONS": {"default_acl": None, "querystring_auth": True}},
-        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
-    }
-    AWS_DEFAULT_ACL = None
-    AWS_QUERYSTRING_AUTH = True
-    AWS_S3_FILE_OVERWRITE = False
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # Authentication
 LOGIN_URL = 'login'
@@ -199,19 +141,17 @@ LOGIN_REDIRECT_URL = 'dashboard'
 LOGOUT_REDIRECT_URL = 'home'
 
 # Upload limit for credential documents (5 MB)
-MAX_UPLOAD_SIZE = 4 * 1024 * 1024
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024
 
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
-EMAIL_HOST = os.getenv("EMAIL_HOST", "")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
-EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "MediConnect <noreply@example.com>")
+MAILERS = {
+    'default': {
+        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+    },
+}
 
 
 # Triage AI agent (LangChain + OpenAI)
@@ -235,7 +175,7 @@ VERIFICATION_AI_ENABLED = (
 VERIFICATION_AI_TIMEOUT = int(os.getenv("VERIFICATION_AI_TIMEOUT", "90"))
 # Reading documents needs good vision: a larger model than the triage one by default.
 VERIFICATION_MODEL = os.getenv("VERIFICATION_MODEL", "gpt-4.1")
-VERIFICATION_ASYNC = env_bool("AI_BACKGROUND_ASYNC", not ON_HOSTED_PLATFORM) and "test" not in sys.argv
+VERIFICATION_ASYNC = "test" not in sys.argv  # run in a background thread (not during tests)
 
 # Document analysis agent (reads patients' lab results for the doctor).
 DOCUMENT_AI_ENABLED = (
@@ -245,25 +185,7 @@ DOCUMENT_AI_ENABLED = (
 )
 DOCUMENT_AI_MODEL = os.getenv("DOCUMENT_AI_MODEL", "gpt-4.1")
 DOCUMENT_AI_TIMEOUT = int(os.getenv("DOCUMENT_AI_TIMEOUT", "90"))
-DOCUMENT_AI_ASYNC = env_bool("AI_BACKGROUND_ASYNC", not ON_HOSTED_PLATFORM) and "test" not in sys.argv
-
-# Pharma-Check's optional second opinion. Deterministic rules always run without AI.
-PHARMACHECK_AI_ENABLED = (
-    os.getenv("PHARMACHECK_AI_ENABLED", "true").lower() == "true"
-    and bool(OPENAI_API_KEY)
-    and "test" not in sys.argv
-)
-PHARMACHECK_AI_MODEL = os.getenv("PHARMACHECK_AI_MODEL", "gpt-4.1-mini")
-PHARMACHECK_AI_TIMEOUT = int(os.getenv("PHARMACHECK_AI_TIMEOUT", "30"))
-PHARMACHECK_AI_ASYNC = env_bool("AI_BACKGROUND_ASYNC", not ON_HOSTED_PLATFORM) and "test" not in sys.argv
-
-# Follow-up plan task suggestions (doctor-reviewed drafts only).
-FOLLOWUP_AI_ENABLED = (
-    os.getenv("FOLLOWUP_AI_ENABLED", "true").lower() == "true"
-    and bool(OPENAI_API_KEY)
-    and "test" not in sys.argv
-)
-FOLLOWUP_AI_TIMEOUT = int(os.getenv("FOLLOWUP_AI_TIMEOUT", "30"))
+DOCUMENT_AI_ASYNC = "test" not in sys.argv
 
 LOGGING = {
     "version": 1,

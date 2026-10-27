@@ -37,12 +37,7 @@ def shortcuts_for(role):
 def user_role(request):
     role = get_role(request.user)
     # Bumped when CSS/JS change, so browsers never keep an old version in cache.
-    context = {
-        "user_role": role,
-        "asset_version": settings.ASSET_VERSION,
-        "shortcuts": shortcuts_for(role),
-        "handsfree_enabled": settings.HANDSFREE_ENABLED,
-    }
+    context = {"user_role": role, "asset_version": settings.ASSET_VERSION, "shortcuts": shortcuts_for(role)}
     if request.user.is_authenticated:
         context["unread_notifications"] = request.user.notifications.filter(is_read=False).count()
     if role == "doctor" and request.user.doctor_profile.is_verified:
