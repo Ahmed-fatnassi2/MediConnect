@@ -173,7 +173,7 @@ STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
-ASSET_VERSION = "2026-10-27.3"
+ASSET_VERSION = "2026-10-27.5"
 HANDSFREE_ENABLED = os.getenv("HANDSFREE_ENABLED", "true").strip().lower() in {
     "1", "true", "yes", "on",
 }

@@ -9,6 +9,8 @@
   const FACE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
   const LEFT_IRIS = 468;
   const RIGHT_IRIS = 473;
+  const BLINK_OPEN_PHASE_MS = 2800;
+  const BLINK_SAMPLE_PHASE_MS = 6400;
   const BLINK_ON = 0.52;
   const BLINK_OFF = 0.34;
   const BLINK_COOLDOWN = 450;
@@ -26,9 +28,9 @@
   const calibrationDialog = document.querySelector("[data-hf-calibration]");
   const consentCheck = consentDialog.querySelector("[data-hf-consent-check]");
   const consentAccept = consentDialog.querySelector("[data-hf-consent-accept]");
-  const calibrationStage = calibrationDialog.querySelector("[data-hf-calibration-stage]");
   const calibrationStatus = calibrationDialog.querySelector("[data-hf-calibration-status]");
   const calibrationResult = calibrationDialog.querySelector("[data-hf-calibration-result]");
+  const calibrationCount = calibrationDialog.querySelector("[data-hf-calibration-count]");
 
   let preferences = readPreferences();
   let core = null;
@@ -53,17 +55,22 @@
   let lastGaze = null;
   let gazeSmooth = null;
   let blinkPeak = false;
+  let blinkTarget = null;
   let lastBlinkClick = 0;
   let activeTarget = null;
   let pendingConfirmation = null;
   let pinchStart = null;
   let pinchDragged = false;
   let lastPinchPoint = null;
-  let snapRadius = 56;
+  let snapRadius = 72;
   let calibrationPhase = "idle";
   let calibrationStartedAt = 0;
   let calibrationOpenSamples = [];
   let calibrationBlinkSamples = [];
+  let faceWasDetected = false;
+  let lastFaceHintAt = 0;
+  let handWasDetected = false;
+  let lastHandHintAt = 0;
   let blinkThresholds = { on: BLINK_ON, off: BLINK_OFF };
   try {
     const savedThresholds = JSON.parse(localStorage.getItem("mc-handsfree-blink") || "null");
@@ -262,7 +269,12 @@
     positionCursor(point);
     const target = targetAt(point);
     markTarget(target);
-    cursorRing.hidden = true;
+    if (target) {
+      cursorRing.hidden = false;
+      cursorRing.style.setProperty("--hf-progress", "0%");
+    } else {
+      cursorRing.hidden = true;
+    }
   }
 
   function updatePauseButton() {
@@ -316,7 +328,7 @@
         if (!window.HandsfreeCore) reject(new Error("Le moteur du pointeur est indisponible."));
         else {
           core = window.HandsfreeCore;
-          pinch = new core.PinchDetector();
+          pinch = new core.PinchDetector(0.22, 0.34, 140);
           palmPause = new core.PalmPauseDetector();
           resolve(core);
         }
@@ -437,8 +449,8 @@
       baseOptions: { modelAssetPath: HAND_MODEL_URL },
       runningMode: "VIDEO",
       numHands: 1,
-      minHandDetectionConfidence: 0.55,
-      minTrackingConfidence: 0.55,
+      minHandDetectionConfidence: 0.45,
+      minTrackingConfidence: 0.45,
     });
   }
 
@@ -449,35 +461,133 @@
         ? Math.max(score, item.score) : score, 0);
   }
 
-  function processEyes(result, now) {
-    const landmarks = result.faceLandmarks?.[0];
-    if (!landmarks || landmarks.length <= RIGHT_IRIS) {
-      lastGaze = null;
-      markTarget(null);
-      return;
-    }
+  function gazeFeature(landmarks) {
+    if (!landmarks || landmarks.length <= RIGHT_IRIS) return null;
     const left = landmarks[LEFT_IRIS];
     const right = landmarks[RIGHT_IRIS];
-    const point = {
-      x: (1 - (left.x + right.x) / 2) * innerWidth,
-      y: ((left.y + right.y) / 2) * innerHeight,
+    if (!left || !right || !Number.isFinite(left.x) || !Number.isFinite(right.x)) return null;
+    return { x: (left.x + right.x) / 2, y: (left.y + right.y) / 2 };
+  }
+
+  function mapGazeToScreen(gaze) {
+    return {
+      x: Math.max(0.02, Math.min(0.98, 1 - gaze.x)) * innerWidth,
+      y: Math.max(0.04, Math.min(0.96, gaze.y)) * innerHeight,
     };
+  }
+
+  function quantile(sorted, q) {
+    const position = (sorted.length - 1) * q;
+    const lower = Math.floor(position);
+    const fraction = position - lower;
+    return sorted[lower + 1] === undefined
+      ? sorted[lower]
+      : sorted[lower] + fraction * (sorted[lower + 1] - sorted[lower]);
+  }
+
+  function finishBlinkCalibration() {
+    calibrationPhase = "idle";
+    const open = [...calibrationOpenSamples].sort((a, b) => a - b);
+    const blinks = calibrationBlinkSamples;
+    if (open.length < 12 || blinks.length < 20) {
+      calibrationStatus.textContent = "Calibration incomplète.";
+      calibrationResult.textContent = "Le visage n’a pas été détecté assez longtemps. Vérifiez le cadrage et l’éclairage, puis recommencez.";
+    } else {
+      const openHigh = quantile(open, 0.88);
+      const blinkHigh = Math.max(...blinks);
+      const span = blinkHigh - openHigh;
+      if (span < 0.1) {
+        calibrationStatus.textContent = "Clignements non détectés.";
+        calibrationResult.textContent = "Gardez les yeux ouverts pendant la première étape, puis clignez volontairement plusieurs fois pendant la seconde.";
+      } else {
+        let on = openHigh + span * 0.48;
+        let off = openHigh + span * 0.26;
+        on = Math.min(0.92, Math.max(on, off + 0.07));
+        off = Math.max(0.04, Math.min(off, on - 0.07));
+        blinkThresholds = { on, off };
+        try { localStorage.setItem("mc-handsfree-blink", JSON.stringify(blinkThresholds)); } catch (error) { /* local only */ }
+        calibrationStatus.textContent = "Clignement calibré.";
+        calibrationResult.textContent = "Le marqueur suit approximativement vos yeux. Regardez un bouton ou un lien, puis clignez une fois pour cliquer.";
+      }
+    }
+    setTimeout(() => {
+      if (calibrationDialog.open) calibrationDialog.close();
+      showOverlays();
+    }, 2200);
+  }
+
+  function sampleBlinkCalibration(score, now, hasFace) {
+    const elapsed = now - calibrationStartedAt;
+    if (calibrationPhase === "open") {
+      if (hasFace) calibrationOpenSamples.push(score);
+      calibrationCount.textContent = `Gardez les yeux ouverts : ${Math.max(0, Math.ceil((BLINK_OPEN_PHASE_MS - elapsed) / 1000))} s`;
+      if (elapsed >= BLINK_OPEN_PHASE_MS) {
+        calibrationPhase = "blink";
+        calibrationStartedAt = now;
+        calibrationBlinkSamples = [];
+        calibrationCount.textContent = "Étape 2 sur 2";
+        calibrationStatus.textContent = "Clignez plusieurs fois, normalement.";
+        calibrationDialog.querySelector("[data-hf-calibration-instructions]").textContent = "Clignez volontairement plusieurs fois pendant la mesure. Gardez la tête face à la caméra.";
+      }
+    } else if (calibrationPhase === "blink") {
+      if (hasFace) calibrationBlinkSamples.push(score);
+      calibrationCount.textContent = `Clignez plusieurs fois : ${Math.max(0, Math.ceil((BLINK_SAMPLE_PHASE_MS - elapsed) / 1000))} s`;
+      if (elapsed >= BLINK_SAMPLE_PHASE_MS) finishBlinkCalibration();
+    }
+  }
+
+  function handleEyeBlink(score) {
+    if (score >= blinkThresholds.on && !blinkPeak) {
+      blinkPeak = true;
+      blinkTarget = lastGaze ? targetAt(lastGaze) : activeTarget;
+    }
+    if (blinkPeak && score <= blinkThresholds.off) {
+      blinkPeak = false;
+      const target = blinkTarget;
+      blinkTarget = null;
+      if (target && Date.now() - lastBlinkClick >= BLINK_COOLDOWN) {
+        lastBlinkClick = Date.now();
+        performClick(target);
+      } else if (target) {
+        announce("Gardez le regard sur la cible jusqu’au remplissage du cercle, puis clignez une fois pour cliquer.");
+      } else if (activeTarget) {
+        announce("Gardez le regard sur la cible jusqu’au remplissage du cercle, puis clignez une fois pour cliquer.");
+      } else {
+        announce("Regardez un bouton ou un lien avant de cligner pour cliquer.");
+      }
+    }
+  }
+
+  function processEyes(result, now) {
+    const landmarks = result.faceLandmarks?.[0];
+    const gaze = gazeFeature(landmarks);
+    const score = blinkScore(result);
+    sampleBlinkCalibration(score, now, Boolean(landmarks));
+    if (!gaze) {
+      if (runtimeReady && !trackingPaused && !calibrationDialog.open) handleEyeBlink(score);
+      if (calibrationPhase !== "idle") calibrationStatus.textContent = "Visage non détecté : ajustez l’éclairage et placez votre visage dans le cadre.";
+      faceWasDetected = false;
+      if (["eyes", "combined"].includes(activeMode) && Date.now() - lastFaceHintAt > 2500) {
+        lastFaceHintAt = Date.now();
+        announce("Visage non détecté. Placez votre visage face à la caméra et vérifiez l’éclairage.");
+      }
+      return;
+    }
+    if (!faceWasDetected) {
+      faceWasDetected = true;
+      if (["eyes", "combined"].includes(activeMode) && calibrationPhase === "idle") {
+        announce("Visage détecté. Regardez un élément puis clignez une fois pour cliquer.");
+      }
+    }
+    const point = mapGazeToScreen(gaze);
     gazeSmooth = core.smoothPoint(gazeSmooth, point, 0.24);
     lastGaze = gazeSmooth;
 
-    const score = blinkScore(result);
-    if (calibrationPhase !== "idle") sampleBlinkCalibration(score, now);
     if (!runtimeReady || trackingPaused || calibrationDialog.open) return;
-    updatePointer(lastGaze);
-    edgeScroll(lastGaze.y);
-
-    if (score >= blinkThresholds.on) blinkPeak = true;
-    else if (score <= blinkThresholds.off && blinkPeak) {
-      blinkPeak = false;
-      if (activeTarget && Date.now() - lastBlinkClick >= BLINK_COOLDOWN) {
-        lastBlinkClick = Date.now();
-        performClick(activeTarget);
-      }
+    handleEyeBlink(score);
+    if (!blinkPeak) {
+      updatePointer(lastGaze);
+      edgeScroll(lastGaze.y);
     }
   }
 
@@ -508,7 +618,16 @@
       pinch.reset();
       palmPause.reset();
       lastPinchPoint = null;
+      handWasDetected = false;
+      if (activeMode === "hands" && Date.now() - lastHandHintAt > 2500) {
+        lastHandHintAt = Date.now();
+        announce("Main non détectée. Montrez une main entière, à hauteur du visage, face à la caméra.");
+      }
       return;
+    }
+    if (!handWasDetected) {
+      handWasDetected = true;
+      if (activeMode === "hands") announce("Main détectée : pointez avec l’index, puis pincez pouce-index pour cliquer.");
     }
     const position = (point) => ({ x: (1 - point.x) * innerWidth, y: point.y * innerHeight });
     const index = landmarks[8];
@@ -523,6 +642,10 @@
     if (palmPause.update(openPalm, now)) setPaused(!trackingPaused);
     if (!trackingPaused && activeMode === "hands") updatePointer(handPoint);
     const state = pinch.update(pinchRatio, now);
+    if (!trackingPaused && activeMode === "hands") {
+      cursorRing.hidden = false;
+      cursorRing.style.setProperty("--hf-progress", state.pressed ? "100%" : "0%");
+    }
     if (state.started) {
       pinchStart = handPoint;
       lastPinchPoint = handPoint;
@@ -533,7 +656,10 @@
       if (pinchDragged) window.scrollBy(0, core.scrollDrag(lastPinchPoint.y, handPoint.y));
       lastPinchPoint = handPoint;
     } else if (state.released && pinchStart) {
-      if (!pinchDragged && !trackingPaused) performClick(activeTarget);
+      if (!pinchDragged && !trackingPaused) {
+        if (activeTarget) performClick(activeTarget);
+        else announce("Aucune cible sous le curseur. Pointez un bouton ou un lien avant de pincer.");
+      }
       pinchStart = null;
       lastPinchPoint = null;
       pinchDragged = false;
@@ -541,59 +667,29 @@
   }
 
   function beginCalibration() {
-    if (!faceLandmarker) return;
+    if (!faceLandmarker) {
+      announce("Choisissez d’abord le mode Yeux ou Yeux + mains, puis autorisez la caméra.");
+      return;
+    }
     calibrationPhase = "open";
     calibrationStartedAt = performance.now();
     calibrationOpenSamples = [];
     calibrationBlinkSamples = [];
     calibrationResult.textContent = "";
-    calibrationStage.replaceChildren();
-    calibrationStatus.textContent = "Étape 1/2 : regardez l’écran, yeux ouverts, pendant 3 secondes.";
-    calibrationDialog.querySelector("[data-hf-calibration-instructions]").textContent = "Ensuite, clignez naturellement plusieurs fois pendant 6 secondes. Ces mesures restent dans ce navigateur.";
+    calibrationCount.textContent = "Étape 1 sur 2";
+    calibrationStatus.textContent = "Regardez la caméra, les yeux ouverts.";
+    calibrationDialog.querySelector("[data-hf-calibration-instructions]").textContent = "Restez face à la caméra et gardez les yeux ouverts pendant quelques secondes. Ensuite, clignez plusieurs fois normalement.";
+    if (cameraVideo) cameraVideo.hidden = true;
     if (!calibrationDialog.open) calibrationDialog.showModal();
     promoteOverlays();
   }
 
-  function sampleBlinkCalibration(score, now) {
-    if (calibrationPhase === "open") {
-      calibrationOpenSamples.push(score);
-      const elapsed = now - calibrationStartedAt;
-      calibrationStage.style.setProperty("--calibration-progress", `${Math.min(100, elapsed / 2800 * 100)}%`);
-      if (elapsed >= 2800) {
-        calibrationPhase = "blink";
-        calibrationStartedAt = now;
-        calibrationStatus.textContent = "Étape 2/2 : clignez naturellement plusieurs fois pendant 6 secondes.";
-        calibrationStage.style.setProperty("--calibration-progress", "0%");
-      }
-      return;
-    }
-    if (calibrationPhase !== "blink") return;
-    calibrationBlinkSamples.push(score);
-    const elapsed = now - calibrationStartedAt;
-    calibrationStage.style.setProperty("--calibration-progress", `${Math.min(100, elapsed / 6400 * 100)}%`);
-    if (elapsed < 6400) return;
-    const sorted = [...calibrationOpenSamples].sort((a, b) => a - b);
-    const openHigh = sorted.length ? sorted[Math.floor((sorted.length - 1) * 0.88)] : 0;
-    const blinkHigh = Math.max(0, ...calibrationBlinkSamples);
-    const span = blinkHigh - openHigh;
+  function cancelCalibration() {
     calibrationPhase = "idle";
-    if (sorted.length < 12 || calibrationBlinkSamples.length < 20 || span < 0.1) {
-      calibrationStatus.textContent = "Calibration impossible.";
-      calibrationResult.textContent = "Vérifiez l’éclairage, gardez votre visage dans le cadre et recommencez.";
-      return;
-    }
-    let on = openHigh + span * 0.48;
-    let off = openHigh + span * 0.26;
-    on = Math.min(0.92, Math.max(on, off + 0.07));
-    off = Math.max(0.04, Math.min(off, on - 0.07));
-    blinkThresholds = { on, off };
-    try { localStorage.setItem("mc-handsfree-blink", JSON.stringify(blinkThresholds)); } catch (error) { /* local only */ }
-    calibrationStatus.textContent = "Calibration terminée.";
-    calibrationResult.textContent = "Les seuils de clignement ont été ajustés pour cette caméra.";
-    setTimeout(() => {
-      if (calibrationDialog.open) calibrationDialog.close();
-      showOverlays();
-    }, 1200);
+    calibrationOpenSamples = [];
+    calibrationBlinkSamples = [];
+    if (calibrationDialog.open) calibrationDialog.close();
+    showOverlays();
   }
 
   function showError(text) {
@@ -651,8 +747,7 @@
       if (desiredMode === "hands" || desiredMode === "combined") await startHands();
       runtimeReady = true;
       startDetection();
-      if (desiredMode === "hands") snapRadius = 24;
-      else snapRadius = Math.max(56, snapRadius);
+      snapRadius = desiredMode === "hands" ? 72 : 56;
       renderControls();
       announce("Pointeur activé");
       showOverlays();
@@ -695,6 +790,7 @@
     lastGaze = null;
     gazeSmooth = null;
     blinkPeak = false;
+    blinkTarget = null;
     pendingConfirmation = null;
     pinch?.reset();
     palmPause?.reset();
@@ -740,12 +836,11 @@
     beginCalibration();
   });
   calibrationDialog.querySelector("[data-hf-calibration-close]").addEventListener("click", () => {
-    calibrationDialog.close();
-    showOverlays();
+    cancelCalibration();
   });
   calibrationDialog.addEventListener("close", () => {
     calibrationPhase = "idle";
-    calibrationStage.replaceChildren();
+    if (cameraVideo) cameraVideo.hidden = !preferences.preview;
     promoteOverlays();
   });
   pauseButton.addEventListener("click", () => setPaused(!trackingPaused));

@@ -2,7 +2,7 @@
 {% if not dialogs_only %}
 <fieldset class="a11y-group hf-settings" data-hf-settings data-core-url="{% static 'handsfree/handsfree-core.js' %}?v={{ asset_version }}">
   <legend><i class="bi bi-hand-index-thumb"></i> Navigation mains libres</legend>
-  <p class="form-help">Le suivi du regard et des mains utilise MediaPipe dans ce navigateur. La caméra reste locale ; aucune image n'est enregistrée ni envoyée. Alt+Maj+G : activer/désactiver.</p>
+  <p class="form-help">Le suivi du regard et des mains est traité dans ce navigateur. La caméra reste locale ; aucune image n'est enregistrée ni envoyée. Raccourci : <kbd>Alt</kbd> + <kbd>Maj</kbd> + <kbd>G</kbd>.</p>
   <div class="segmented hf-modes" role="radiogroup" aria-label="Mode de navigation mains libres">
     <label><input type="radio" name="hf-mode" value="off" checked><span>Désactivé</span></label>
     <label><input type="radio" name="hf-mode" value="eyes"><span>Yeux</span></label>
@@ -22,6 +22,27 @@
     </label>
   </div>
   <p class="form-help" data-hf-message role="status">Navigation mains libres désactivée.</p>
+  <div class="hf-instructions" aria-label="Instructions de navigation mains libres">
+    <section>
+      <h4>Avec les yeux</h4>
+      <ol>
+        <li>Choisissez <strong>Yeux</strong> ou <strong>Yeux + mains</strong> et autorisez la caméra.</li>
+        <li>Activez l’aperçu pour vérifier que votre visage est bien cadré et éclairé.</li>
+        <li>Cliquez sur <strong>Calibrer le clignement</strong> : gardez les yeux ouverts pendant la première étape, puis clignez plusieurs fois pendant la seconde.</li>
+        <li>Le petit marqueur rouge suit approximativement votre regard. Regardez un bouton ou un lien, puis clignez une fois pour cliquer.</li>
+      </ol>
+    </section>
+    <section>
+      <h4>Avec la main</h4>
+      <ol>
+        <li>Choisissez <strong>Mains</strong> ou <strong>Yeux + mains</strong>. Gardez toute une main visible, paume vers la caméra.</li>
+        <li>Pointez avec l’index : le curseur suit son bout. Visez un élément entouré en rouge.</li>
+        <li>Pour cliquer, rapprochez le pouce et l’index, maintenez brièvement, puis relâchez.</li>
+        <li>Pour défiler, gardez le pincement et déplacez l’index verticalement. Montrez la paume ouverte une seconde pour mettre en pause ou reprendre.</li>
+      </ol>
+    </section>
+    <p class="form-help">Si rien ne bouge : vérifiez l’autorisation caméra, l’aperçu, l’éclairage et le cadrage. Vous pouvez toujours utiliser la souris ou le clavier.</p>
+  </div>
 </fieldset>
 {% endif %}
 {% if dialogs_only %}
@@ -40,13 +61,13 @@
 </dialog>
 <dialog class="ai-dialog hf-dialog hf-calibration" data-hf-calibration aria-labelledby="hf-calibration-title">
   <div class="ai-dialog-head">
-    <div><h3 id="hf-calibration-title">Calibration du clignement</h3><span data-hf-calibration-status>Gardez les yeux ouverts pendant 3 secondes.</span></div>
+    <div><h3 id="hf-calibration-title">Calibration du clignement</h3><span data-hf-calibration-status>Préparez-vous à calibrer le clignement.</span></div>
     <button type="button" class="btn btn-ghost btn-sm" data-hf-calibration-close aria-label="Fermer"><i class="bi bi-x-lg"></i></button>
   </div>
   <div class="ai-dialog-body">
-    <p data-hf-calibration-instructions>Clignez naturellement pendant la deuxième étape pour ajuster la détection à votre caméra.</p>
-    <div class="hf-calibration-stage" data-hf-calibration-stage></div>
-    <p class="form-help" data-hf-calibration-result aria-live="polite"></p>
+    <p data-hf-calibration-instructions>Restez face à la caméra, gardez les yeux ouverts pendant la première étape, puis clignez plusieurs fois pendant la seconde.</p>
+    <p class="form-help hf-calibration-count" data-hf-calibration-count>Étape 1 sur 2</p>
+    <p class="form-help hf-calibration-result" data-hf-calibration-result aria-live="polite"></p>
   </div>
 </dialog>
 {% endif %}
