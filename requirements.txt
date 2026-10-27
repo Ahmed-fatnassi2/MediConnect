@@ -5,6 +5,7 @@ certifi==2026.10.23
 charset-normalizer==3.5.2
 distro==1.9.0
 Django==6.1.2
+gunicorn==23.0.0
 dj-database-url==3.1.0
 django-storages[s3]==1.14.6
 h11==0.16.0
@@ -44,6 +45,7 @@ tiktoken==0.14.0
 truststore==0.10.5
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+whitenoise==6.9.0
 tzdata==2026.5
 urllib3==2.8.0
 uuid_utils==0.18.0
